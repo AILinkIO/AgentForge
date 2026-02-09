@@ -5,9 +5,9 @@ import reactor.core.publisher.Mono;
 
 public interface LlmProvider {
 
-    ChatResponse chat(ChatRequest request);
+    ChatResponse<?> chat(ChatRequest request);
 
-    Mono<ChatResponse> chatAsync(ChatRequest request);
+    Mono<? extends ChatResponse<?>> chatAsync(ChatRequest request);
 
     Flux<String> chatStream(ChatRequest request);
 }

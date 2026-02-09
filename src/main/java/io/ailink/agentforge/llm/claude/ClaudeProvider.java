@@ -37,12 +37,12 @@ public class ClaudeProvider implements LlmProvider {
     }
 
     @Override
-    public ChatResponse chat(ChatRequest request) {
+    public ChatResponse<?> chat(ChatRequest request) {
         return chatAsync(request).block();
     }
 
     @Override
-    public Mono<ChatResponse> chatAsync(ChatRequest request) {
+    public Mono<ClaudeChatResponse> chatAsync(ChatRequest request) {
         ClaudeRequest claudeRequest = toClaudeRequest(request, false);
 
         return webClient.post()
@@ -57,7 +57,7 @@ public class ClaudeProvider implements LlmProvider {
                                 .flatMap(body -> Mono.error(new RuntimeException(
                                         "Claude API error " + response.statusCode() + ": " + body))))
                 .bodyToMono(ClaudeResponse.class)
-                .map(this::toChatResponse);
+                .map(ClaudeChatResponse::new);
     }
 
     @Override
@@ -111,25 +111,6 @@ public class ClaudeProvider implements LlmProvider {
                 request.system(),
                 request.temperature(),
                 stream ? true : null
-        );
-    }
-
-    private ChatResponse toChatResponse(ClaudeResponse response) {
-        String text = response.content().stream()
-                .filter(block -> "text".equals(block.type()))
-                .map(ClaudeResponse.ContentBlock::text)
-                .collect(Collectors.joining());
-
-        TokenUsage usage = response.usage() != null
-                ? new TokenUsage(response.usage().inputTokens(), response.usage().outputTokens())
-                : null;
-
-        return new ChatResponse(
-                response.id(),
-                text,
-                response.model(),
-                response.stopReason(),
-                usage
         );
     }
 }

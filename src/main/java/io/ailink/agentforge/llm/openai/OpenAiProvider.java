@@ -37,12 +37,12 @@ public class OpenAiProvider implements LlmProvider {
     }
 
     @Override
-    public ChatResponse chat(ChatRequest request) {
+    public ChatResponse<?> chat(ChatRequest request) {
         return chatAsync(request).block();
     }
 
     @Override
-    public Mono<ChatResponse> chatAsync(ChatRequest request) {
+    public Mono<OpenAiChatResponse> chatAsync(ChatRequest request) {
         OpenAiRequest openAiRequest = toOpenAiRequest(request, false);
 
         return webClient.post()
@@ -56,7 +56,7 @@ public class OpenAiProvider implements LlmProvider {
                                 .flatMap(body -> Mono.error(new RuntimeException(
                                         "OpenAI API error " + response.statusCode() + ": " + body))))
                 .bodyToMono(OpenAiResponse.class)
-                .map(this::toChatResponse);
+                .map(OpenAiChatResponse::new);
     }
 
     @Override
@@ -115,29 +115,6 @@ public class OpenAiProvider implements LlmProvider {
                 maxTokens,
                 request.temperature(),
                 stream ? true : null
-        );
-    }
-
-    private ChatResponse toChatResponse(OpenAiResponse response) {
-        String content = "";
-        String finishReason = null;
-
-        if (response.choices() != null && !response.choices().isEmpty()) {
-            var choice = response.choices().getFirst();
-            content = choice.message() != null ? choice.message().content() : "";
-            finishReason = choice.finishReason();
-        }
-
-        TokenUsage usage = response.usage() != null
-                ? new TokenUsage(response.usage().promptTokens(), response.usage().completionTokens())
-                : null;
-
-        return new ChatResponse(
-                response.id(),
-                content,
-                response.model(),
-                finishReason,
-                usage
         );
     }
 }
