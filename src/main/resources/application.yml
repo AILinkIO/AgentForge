@@ -1,8 +1,13 @@
 spring:
   main:
     web-application-type: none
+    banner-mode: off
   application:
     name: AgentForge
+
+logging:
+  level:
+    root: warn
   datasource:
     url: jdbc:sqlite:data/agentforge.db
     driver-class-name: org.sqlite.JDBC
