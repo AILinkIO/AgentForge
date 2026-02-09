@@ -15,8 +15,8 @@ spring:
 agentforge:
   llm:
     claude:
-      api-key: ${ANTHROPIC_API_KEY:}
-      base-url: https://api.anthropic.com
+      api-key: ${ANTHROPIC_AUTH_TOKEN:}
+      base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
       default-model: claude-sonnet-4-20250514
       default-max-tokens: 1024
     openai:
