@@ -19,6 +19,7 @@ logging:
 
 agentforge:
   llm:
+    provider: ${LLM_PROVIDER:}
     claude:
       api-key: ${ANTHROPIC_AUTH_TOKEN:}
       base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
