@@ -2,6 +2,7 @@ package io.ailink.agentforge.llm.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.ailink.agentforge.llm.*;
+import io.ailink.agentforge.llm.openai.dto.OpenAiResponse;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -79,7 +80,7 @@ class OpenAiProviderTest {
     void chat_returnsResponseFromApi() {
         OpenAiProvider provider = createProvider(jsonExchange(OK_RESPONSE));
 
-        ChatResponse resp = provider.chat(ChatRequest.builder()
+        ChatResponse<?> resp = provider.chat(ChatRequest.builder()
                 .messages(List.of(ChatMessage.user("Hi")))
                 .build());
 
@@ -166,6 +167,23 @@ class OpenAiProviderTest {
                         .build()));
         assertTrue(ex.getMessage().contains("401"));
         assertTrue(ex.getMessage().contains("Incorrect API key"));
+    }
+
+    @Test
+    void chat_rawResponseAccessible() {
+        OpenAiProvider provider = createProvider(jsonExchange(OK_RESPONSE));
+
+        ChatResponse<?> resp = provider.chat(ChatRequest.builder()
+                .messages(List.of(ChatMessage.user("Hi")))
+                .build());
+
+        assertInstanceOf(OpenAiChatResponse.class, resp);
+        OpenAiChatResponse openAiResp = (OpenAiChatResponse) resp;
+        OpenAiResponse raw = openAiResp.rawResponse();
+        assertNotNull(raw);
+        assertEquals("chatcmpl-123", raw.id());
+        assertEquals(1, raw.choices().size());
+        assertEquals("Hello, world!", raw.choices().getFirst().message().content());
     }
 
     @Test

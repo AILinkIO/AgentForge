@@ -2,6 +2,7 @@ package io.ailink.agentforge.llm.claude;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.ailink.agentforge.llm.*;
+import io.ailink.agentforge.llm.claude.dto.ClaudeResponse;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -80,7 +81,7 @@ class ClaudeProviderTest {
     void chat_returnsResponseFromApi() {
         ClaudeProvider provider = createProvider(jsonExchange(OK_RESPONSE));
 
-        ChatResponse resp = provider.chat(ChatRequest.builder()
+        ChatResponse<?> resp = provider.chat(ChatRequest.builder()
                 .messages(List.of(ChatMessage.user("Hi")))
                 .build());
 
@@ -191,6 +192,24 @@ class ClaudeProviderTest {
         assertEquals(2, chunks.size());
         assertEquals("Hello", chunks.get(0));
         assertEquals(", world!", chunks.get(1));
+    }
+
+    @Test
+    void chat_rawResponseAccessible() {
+        ClaudeProvider provider = createProvider(jsonExchange(OK_RESPONSE));
+
+        ChatResponse<?> resp = provider.chat(ChatRequest.builder()
+                .messages(List.of(ChatMessage.user("Hi")))
+                .build());
+
+        assertInstanceOf(ClaudeChatResponse.class, resp);
+        ClaudeChatResponse claudeResp = (ClaudeChatResponse) resp;
+        ClaudeResponse raw = claudeResp.rawResponse();
+        assertNotNull(raw);
+        assertEquals("msg_123", raw.id());
+        assertEquals(1, raw.content().size());
+        assertEquals("text", raw.content().getFirst().type());
+        assertEquals("Hello, world!", raw.content().getFirst().text());
     }
 
     @Test
