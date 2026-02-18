@@ -1,7 +1,7 @@
 package io.ailink.agentforge.llm.claude;
 
-import io.ailink.agentforge.llm.ChatResponse;
-import io.ailink.agentforge.llm.TokenUsage;
+import io.ailink.agentforge.llm.dto.ChatResponse;
+import io.ailink.agentforge.llm.dto.TokenUsage;
 import io.ailink.agentforge.llm.claude.dto.ClaudeResponse;
 
 import java.util.stream.Collectors;
@@ -40,7 +40,7 @@ public class ClaudeChatResponse implements ChatResponse<ClaudeResponse> {
     @Override
     public TokenUsage usage() {
         return raw.usage() != null
-                ? new TokenUsage(raw.usage().inputTokens(), raw.usage().outputTokens())
+                ? TokenUsage.of(raw.usage().inputTokens(), raw.usage().outputTokens())
                 : null;
     }
 
