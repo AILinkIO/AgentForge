@@ -4,10 +4,6 @@ spring:
     banner-mode: off
   application:
     name: AgentForge
-
-logging:
-  level:
-    root: warn
   datasource:
     url: jdbc:sqlite:data/agentforge.db
     driver-class-name: org.sqlite.JDBC
@@ -16,6 +12,10 @@ logging:
     hibernate:
       ddl-auto: update
     show-sql: false
+
+logging:
+  level:
+    root: warn
 
 agentforge:
   llm:
