@@ -5,6 +5,7 @@ import io.ailink.agentforge.llm.dto.ChatRequest;
 import io.ailink.agentforge.llm.LlmProvider;
 import io.ailink.agentforge.service.ChatHistoryService;
 import io.ailink.agentforge.ui.*;
+import org.jline.reader.LineReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine.Command;
@@ -22,11 +23,6 @@ import java.util.List;
  * - 持久化命令历史（保存在 ~/.agentforge_history）
  * - ANSI 彩色输出
  * - 内置命令：:help, :history, :clear, :summary, :quit
- *
- * 技术实现：
- * - 使用 TerminalManager 管理终端生命周期
- * - 使用 ScreenDrawer 绘制界面
- * - 消息持久化到数据库
  *
  * 使用方式：
  * <pre>
@@ -168,6 +164,9 @@ public class ChatCommand implements Runnable {
             // 创建屏幕绘制器
             ScreenDrawer screenDrawer = new ANSIScreenDrawer(terminalManager);
 
+            // 获取行读取器
+            LineReader reader = terminalManager.getReader();
+
             // 加载历史消息用于显示
             List<DisplayMessage> displayMessages = new java.util.LinkedList<>();
             var recentMessages = chatHistoryService.getRecentChatMessages(20);
@@ -189,7 +188,7 @@ public class ChatCommand implements Runnable {
             }
 
             // 主循环
-            mainLoop(terminalManager, screenDrawer, displayMessages, conversationHistory);
+            mainLoop(terminalManager, screenDrawer, reader, displayMessages, conversationHistory);
 
         } catch (Exception e) {
             log.error("终端错误", e);
@@ -199,31 +198,24 @@ public class ChatCommand implements Runnable {
 
     /**
      * 主交互循环
-     *
-     * @param terminalManager     终端管理器
-     * @param screenDrawer       屏幕绘制器
-     * @param displayMessages    显示消息列表
-     * @param conversationHistory 对话历史
      */
     private void mainLoop(TerminalManager terminalManager,
                           ScreenDrawer screenDrawer,
+                          LineReader reader,
                           List<DisplayMessage> displayMessages,
                           List<ChatMessage> conversationHistory) {
-        var reader = terminalManager.getReader();
         var writer = terminalManager.getWriter();
-        var size = terminalManager.getSize();
 
         while (true) {
-            // 绘制分隔线
-            writer.println();
-            writer.print("─".repeat(size.getColumns()));
-            writer.print("\r");
+            // 显示输入提示符
+            writer.print("\u001B[32m\u001B[1m>\u001B[0m ");
+            writer.flush();
 
             // 读取输入
-            String input = reader.readLine("\u001B[32m\u001B[1m>\u001B[0m ").trim();
+            String input = reader.readLine();
 
-            // 清空输入行
-            writer.print("\r\u001B[K");
+            // 去掉首尾空格
+            input = input.trim();
 
             if (input.isEmpty()) {
                 continue;
@@ -232,11 +224,12 @@ public class ChatCommand implements Runnable {
             // 处理退出命令
             if (isQuitCommand(input)) {
                 writer.println("\u001B[33m再见!\u001B[0m");
+                writer.flush();
                 break;
             }
 
             // 处理内置命令
-            if (handleBuiltInCommand(input, terminalManager, screenDrawer, displayMessages)) {
+            if (handleBuiltInCommand(input, terminalManager, screenDrawer, reader)) {
                 continue;
             }
 
@@ -247,9 +240,6 @@ public class ChatCommand implements Runnable {
 
     /**
      * 判断是否为退出命令
-     *
-     * @param input 用户输入
-     * @return 是否退出
      */
     private boolean isQuitCommand(String input) {
         return ":quit".equals(input) || ":exit".equals(input) || ":q".equals(input);
@@ -257,39 +247,41 @@ public class ChatCommand implements Runnable {
 
     /**
      * 处理内置命令
-     *
-     * @param input           用户输入
-     * @param terminalManager 终端管理器
-     * @param screenDrawer   屏幕绘制器
-     * @param displayMessages 显示消息列表
-     * @return 是否处理了命令
      */
     private boolean handleBuiltInCommand(String input,
                                          TerminalManager terminalManager,
                                          ScreenDrawer screenDrawer,
-                                         List<DisplayMessage> displayMessages) {
+                                         LineReader reader) {
+        var writer = terminalManager.getWriter();
+
         if (":help".equals(input) || ":h".equals(input)) {
             printHelp(terminalManager);
-            screenDrawer.drawChatScreen(displayMessages, "");
+            // 等待用户按回车后继续
+            writer.print("\n\u001B[90m按回车继续...\u001B[0m");
+            writer.flush();
+            reader.readLine();
             return true;
         }
 
         if (":history".equals(input)) {
-            printHistory(terminalManager, displayMessages);
-            screenDrawer.drawChatScreen(displayMessages, "");
+            printHistory(terminalManager);
+            writer.print("\n\u001B[90m按回车继续...\u001B[0m");
+            writer.flush();
+            reader.readLine();
             return true;
         }
 
         if (":clear".equals(input) || ":c".equals(input)) {
-            displayMessages.clear();
             screenDrawer.clearScreen();
-            screenDrawer.drawChatScreen(displayMessages, "");
+            screenDrawer.drawChatScreen(new java.util.ArrayList<>(), "");
             return true;
         }
 
         if (":summary".equals(input)) {
             showSummaryCommand(terminalManager);
-            screenDrawer.drawChatScreen(displayMessages, "");
+            writer.print("\n\u001B[90m按回车继续...\u001B[0m");
+            writer.flush();
+            reader.readLine();
             return true;
         }
 
@@ -298,11 +290,6 @@ public class ChatCommand implements Runnable {
 
     /**
      * 处理聊天消息
-     *
-     * @param input              用户输入
-     * @param screenDrawer      屏幕绘制器
-     * @param displayMessages   显示消息列表
-     * @param conversationHistory 对话历史
      */
     private void processChatMessage(String input,
                                     ScreenDrawer screenDrawer,
@@ -350,17 +337,16 @@ public class ChatCommand implements Runnable {
 
     /**
      * 打印帮助信息
-     *
-     * @param terminalManager 终端管理器
      */
     private void printHelp(TerminalManager terminalManager) {
         var writer = terminalManager.getWriter();
+        writer.println();
         writer.println("\u001B[36m=== 可用命令 ===\u001B[0m");
-        writer.println("  :help, :h   - 显示帮助");
-        writer.println("  :history     - 显示最近消息");
-        writer.println("  :clear, :c  - 清除对话上下文");
-        writer.println("  :summary     - 显示今日总结");
-        writer.println("  :quit, :q   - 退出对话");
+        writer.println("  \u001B[33m:help\u001B[0m, \u001B[33m:h\u001B[0m   - 显示帮助");
+        writer.println("  \u001B[33m:history\u001B[0m     - 显示最近消息");
+        writer.println("  \u001B[33m:clear\u001B[0m, \u001B[33m:c\u001B[0m  - 清除对话上下文");
+        writer.println("  \u001B[33m:summary\u001B[0m     - 显示今日总结");
+        writer.println("  \u001B[33m:quit\u001B[0m, \u001B[33m:q\u001B[0m   - 退出对话");
         writer.println();
         writer.println("\u001B[90m提示: 使用上下方向键查看历史命令\u001B[0m");
         terminalManager.flush();
@@ -368,34 +354,34 @@ public class ChatCommand implements Runnable {
 
     /**
      * 打印历史记录
-     *
-     * @param terminalManager 终端管理器
-     * @param displayMessages 显示消息列表
      */
-    private void printHistory(TerminalManager terminalManager, List<DisplayMessage> displayMessages) {
+    private void printHistory(TerminalManager terminalManager) {
         var writer = terminalManager.getWriter();
-        if (displayMessages.isEmpty()) {
+        var messages = chatHistoryService.getRecentChatMessages(20);
+
+        writer.println();
+        if (messages.isEmpty()) {
             writer.println("\u001B[90m暂无消息记录。\u001B[0m");
             terminalManager.flush();
             return;
         }
         writer.println("\u001B[36m=== 最近消息 ===\u001B[0m");
-        for (var msg : displayMessages) {
-            String roleName = msg.isUser() ? "\u001B[32m用户\u001B[0m" : "\u001B[35m助手\u001B[0m";
-            writer.println("[" + msg.getTime() + "] " + roleName + ": " + msg.getContent());
+        for (var msg : messages) {
+            String roleName = "user".equals(msg.getRole()) ? "\u001B[32m用户\u001B[0m" : "\u001B[35m助手\u001B[0m";
+            writer.println("[\u001B[90m" + msg.getCreatedAt().toLocalTime() + "\u001B[0m] " + roleName + ": " + msg.getContent());
         }
         terminalManager.flush();
     }
 
     /**
      * 显示总结命令
-     *
-     * @param terminalManager 终端管理器
      */
     private void showSummaryCommand(TerminalManager terminalManager) {
         var writer = terminalManager.getWriter();
         var today = java.time.LocalDate.now();
         var summary = chatHistoryService.getDailySummary(today);
+
+        writer.println();
         if (summary == null) {
             writer.println("\u001B[90m今日暂无总结，请运行 'history --summary' 生成。\u001B[0m");
         } else {
