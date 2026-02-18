@@ -5,10 +5,9 @@ spring:
   application:
     name: AgentForge
   datasource:
-    url: jdbc:sqlite:data/agentforge.db
-    driver-class-name: org.sqlite.JDBC
+    url: jdbc:h2:file:./data/agentforge
+    driver-class-name: org.h2.Driver
   jpa:
-    database-platform: org.hibernate.community.dialect.SQLiteDialect
     hibernate:
       ddl-auto: update
     show-sql: false
