@@ -1,7 +1,7 @@
 package io.ailink.agentforge.llm.openai;
 
-import io.ailink.agentforge.llm.ChatResponse;
-import io.ailink.agentforge.llm.TokenUsage;
+import io.ailink.agentforge.llm.dto.ChatResponse;
+import io.ailink.agentforge.llm.dto.TokenUsage;
 import io.ailink.agentforge.llm.openai.dto.OpenAiResponse;
 
 public class OpenAiChatResponse implements ChatResponse<OpenAiResponse> {
@@ -42,7 +42,7 @@ public class OpenAiChatResponse implements ChatResponse<OpenAiResponse> {
     @Override
     public TokenUsage usage() {
         return raw.usage() != null
-                ? new TokenUsage(raw.usage().promptTokens(), raw.usage().completionTokens())
+                ? TokenUsage.of(raw.usage().promptTokens(), raw.usage().completionTokens())
                 : null;
     }
 

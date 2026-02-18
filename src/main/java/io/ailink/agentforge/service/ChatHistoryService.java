@@ -1,121 +1,92 @@
 package io.ailink.agentforge.service;
 
-import io.ailink.agentforge.entity.ChatMessageEntity;
-import io.ailink.agentforge.entity.DailySummaryEntity;
-import io.ailink.agentforge.llm.ChatMessage;
-import io.ailink.agentforge.llm.ChatRequest;
-import io.ailink.agentforge.llm.LlmProvider;
-import io.ailink.agentforge.repository.ChatMessageRepository;
-import io.ailink.agentforge.repository.DailySummaryRepository;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
+import io.ailink.agentforge.persistence.entity.ChatMessageEntity;
+import io.ailink.agentforge.persistence.entity.DailySummaryEntity;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.util.List;
-import java.util.stream.Collectors;
 
-@Service
-public class ChatHistoryService {
+/**
+ * 聊天历史服务接口
+ *
+ * 定义聊天历史管理的业务操作。
+ */
+public interface ChatHistoryService {
 
-    private static final Logger log = LoggerFactory.getLogger(ChatHistoryService.class);
+    /**
+     * 保存用户消息
+     *
+     * @param content 消息内容
+     * @return 保存后的消息实体
+     */
+    ChatMessageEntity saveUserMessage(String content);
 
-    private final ChatMessageRepository chatMessageRepository;
-    private final DailySummaryRepository dailySummaryRepository;
-    private final LlmProvider llmProvider;
+    /**
+     * 保存助手回复
+     *
+     * @param content 消息内容
+     * @return 保存后的消息实体
+     */
+    ChatMessageEntity saveAssistantMessage(String content);
 
-    public ChatHistoryService(ChatMessageRepository chatMessageRepository,
-                               DailySummaryRepository dailySummaryRepository,
-                               LlmProvider llmProvider) {
-        this.chatMessageRepository = chatMessageRepository;
-        this.dailySummaryRepository = dailySummaryRepository;
-        this.llmProvider = llmProvider;
-    }
+    /**
+     * 获取所有消息
+     *
+     * @return 按创建时间升序排列的消息列表
+     */
+    List<ChatMessageEntity> getAllMessages();
 
-    public ChatMessageEntity saveUserMessage(String content) {
-        ChatMessageEntity message = new ChatMessageEntity("user", content);
-        return chatMessageRepository.save(message);
-    }
+    /**
+     * 获取最近的聊天消息
+     *
+     * @param limit 返回的消息数量限制
+     * @return 最近的消息列表（按时间升序）
+     */
+    List<ChatMessageEntity> getRecentChatMessages(int limit);
 
-    public ChatMessageEntity saveAssistantMessage(String content) {
-        ChatMessageEntity message = new ChatMessageEntity("assistant", content);
-        return chatMessageRepository.save(message);
-    }
+    /**
+     * 按日期查询消息
+     *
+     * @param date 查询日期
+     * @return 当天的消息列表
+     */
+    List<ChatMessageEntity> getMessagesByDate(LocalDate date);
 
-    public List<ChatMessageEntity> getAllMessages() {
-        return chatMessageRepository.findAllByOrderByCreatedAtAsc();
-    }
+    /**
+     * 统计指定日期的消息数量
+     *
+     * @param date 查询日期
+     * @return 当天的消息数量
+     */
+    long getMessageCountByDate(LocalDate date);
 
-    public List<ChatMessageEntity> getRecentChatMessages(int limit) {
-        List<ChatMessageEntity> allMessages = chatMessageRepository.findAllByOrderByCreatedAtDesc();
-        List<ChatMessageEntity> reversed = allMessages.reversed();
-        int start = Math.max(0, reversed.size() - limit);
-        return reversed.subList(start, reversed.size());
-    }
+    /**
+     * 获取总消息数量
+     *
+     * @return 数据库中所有消息的数量
+     */
+    long getTotalMessageCount();
 
-    public List<ChatMessageEntity> getMessagesByDate(LocalDate date) {
-        LocalDateTime startOfDay = date.atStartOfDay();
-        LocalDateTime endOfDay = date.atTime(LocalTime.MAX);
-        return chatMessageRepository.findByDateRange(startOfDay, endOfDay);
-    }
+    /**
+     * 生成每日总结
+     *
+     * @param date 要总结的日期
+     * @return 生成的总结实体
+     */
+    DailySummaryEntity generateDailySummary(LocalDate date);
 
-    public long getMessageCountByDate(LocalDate date) {
-        LocalDateTime startOfDay = date.atStartOfDay();
-        LocalDateTime endOfDay = date.atTime(LocalTime.MAX);
-        return chatMessageRepository.countByCreatedAtGreaterThanEqualAndCreatedAtLessThan(startOfDay, endOfDay);
-    }
+    /**
+     * 获取指定日期的总结
+     *
+     * @param date 查询日期
+     * @return 找到的总结实体，不存在则返回 null
+     */
+    DailySummaryEntity getDailySummary(LocalDate date);
 
-    public long getTotalMessageCount() {
-        return chatMessageRepository.count();
-    }
-
-    public DailySummaryEntity generateDailySummary(LocalDate date) {
-        List<ChatMessageEntity> messages = getMessagesByDate(date);
-        if (messages.isEmpty()) {
-            throw new IllegalArgumentException("No messages found for date: " + date);
-        }
-
-        String conversationText = messages.stream()
-                .map(m -> m.getRole() + ": " + m.getContent())
-                .collect(Collectors.joining("\n\n"));
-
-        String summarizationPrompt = String.format(
-                "你是一个对话总结专家。请简洁地总结以下对话的要点：\n1. 用户主要询问了什么问题？\n2. AI给出了什么关键回答？\n请用2-3句话总结。\n\n对话内容：\n%s",
-                conversationText);
-
-        ChatRequest request = ChatRequest.builder()
-                .system("你是一个对话总结专家。")
-                .messages(List.of(ChatMessage.user(summarizationPrompt)))
-                .build();
-
-        StringBuilder summaryBuilder = new StringBuilder();
-        llmProvider.chatStream(request)
-                .doOnNext(chunk -> summaryBuilder.append(chunk))
-                .blockLast();
-
-        String summaryText = summaryBuilder.toString().trim();
-
-        DailySummaryEntity existing = dailySummaryRepository.findBySummaryDate(date).orElse(null);
-        if (existing != null) {
-            existing.setSummary(summaryText);
-            existing.setMessageCount(messages.size());
-            existing.setUpdatedAt(LocalDateTime.now());
-            return dailySummaryRepository.save(existing);
-        } else {
-            DailySummaryEntity newSummary = new DailySummaryEntity(date, summaryText, messages.size());
-            return dailySummaryRepository.save(newSummary);
-        }
-    }
-
-    public DailySummaryEntity getDailySummary(LocalDate date) {
-        return dailySummaryRepository.findBySummaryDate(date).orElse(null);
-    }
-
-    public List<DailySummaryEntity> getAllDailySummaries() {
-        return dailySummaryRepository.findAllByOrderBySummaryDateDesc();
-    }
+    /**
+     * 获取所有每日总结
+     *
+     * @return 按日期倒序排列的总结列表
+     */
+    List<DailySummaryEntity> getAllDailySummaries();
 }
