@@ -1,6 +1,7 @@
 # AgentForge
 
 AI Agent Framework，基于 Spring Boot 构建的 CLI 工具。
+这个项目是AI Agentic应用开发的配套代码，[课程目录](https://zhuanlan.zhihu.com/p/1999462417701303527)，[购买地址](https://wx.zsxq.com/group/28885111454111)
 
 ## 技术栈
 
