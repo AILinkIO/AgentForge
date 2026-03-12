@@ -20,6 +20,7 @@ AI Agent Framework，基于 Spring Boot 构建的 CLI 工具。
 ## 功能特性
 
 - **交互式对话**：作为知识问答助手，支持上下文记忆
+- **Tool Calling 支持**：LLM 可调用工具完成任务
 - **增强终端体验**：命令历史（上下键）、ANSI 彩色输出
 - **历史消息管理**：持久化存储所有对话记录，按日期查询
 - **每日总结**：自动生成每日对话要点总结
@@ -107,6 +108,85 @@ mvn package -DskipTests
 ./agentforge history --help
 ```
 
+## Tool Calling（工具调用）
+
+AgentForge 支持 LLM 调用工具来完成任务。内置工具会自动注册，LLM 会根据用户输入决定是否调用工具。
+
+### 示例：使用计算器
+
+```
+> 帮我计算 23 * 45 + 12
+
+🔧 正在调用工具: calculator...
+
+[calculator] 1037
+
+根据计算结果，23 * 45 + 12 = 1037。
+```
+
+### 内置工具
+
+| 工具名称 | 说明 |
+|----------|------|
+| `calculator` | 数学计算器，支持基本运算和数学函数 |
+
+### 自定义工具
+
+实现 `Tool` 接口并添加 `@Component` 注解即可自动注册：
+
+```java
+@Component
+public class MyCustomTool implements Tool {
+
+    @Override
+    public String name() {
+        return "my_tool";  // 工具名称（唯一标识）
+    }
+
+    @Override
+    public String description() {
+        return "工具描述（发送给 LLM）";
+    }
+
+    @Override
+    public JsonNode inputSchema() {
+        // 返回 JSON Schema 定义参数结构
+        String schema = """
+            {
+                "type": "object",
+                "properties": {
+                    "param1": {
+                        "type": "string",
+                        "description": "参数说明"
+                    }
+                },
+                "required": ["param1"]
+            }
+            """;
+        return new ObjectMapper().readTree(schema);
+    }
+
+    @Override
+    public ToolResult execute(JsonNode arguments) {
+        String param1 = arguments.get("param1").asText();
+        // 执行工具逻辑
+        return ToolResult.success(/* toolCallId */, "执行结果");
+    }
+}
+```
+
+### 工具执行流程
+
+```
+用户输入 → LLM 判断是否需要工具
+    ↓
+需要工具 → 返回 tool_use
+    ↓
+ToolExecutor.execute() → 执行工具
+    ↓
+工具结果返回 LLM → 生成最终回答
+```
+
 ## 数据存储
 
 - 数据库文件：`data/agentforge.mv.db`（H2）
@@ -125,21 +205,43 @@ AgentForge/
 │   │   ├── ChatCommand.java            # chat 子命令
 │   │   └── HistoryCommand.java         # history 子命令
 │   ├── config/                         # Spring 配置
-│   ├── entity/                         # JPA 实体
-│   │   ├── ChatMessageEntity.java      # 消息实体
-│   │   └── DailySummaryEntity.java     # 每日总结实体
-│   ├── repository/                     # 数据访问层
-│   │   ├── ChatMessageRepository.java
-│   │   └── DailySummaryRepository.java
+│   ├── persistence/
+│   │   ├── entity/                     # JPA 实体
+│   │   │   ├── ChatMessageEntity.java
+│   │   │   └── DailySummaryEntity.java
+│   │   └── repository/                 # 数据访问层
+│   │       ├── ChatMessageRepository.java
+│   │       └── DailySummaryRepository.java
 │   ├── service/                        # 业务逻辑层
 │   │   └── ChatHistoryService.java
 │   ├── llm/                            # LLM Provider 抽象与实现
 │   │   ├── LlmProvider.java            # Provider 接口
 │   │   ├── LlmProviderConfig.java      # Provider 自动选择
+│   │   ├── dto/                        # 通用 DTO
+│   │   │   ├── ChatRequest.java
+│   │   │   ├── ChatMessage.java
+│   │   │   └── ChatResponse.java
 │   │   ├── claude/                     # Claude 实现
+│   │   │   ├── ClaudeProvider.java
+│   │   │   └── dto/
 │   │   └── openai/                     # OpenAI 实现
-│   └── template/
-│       └── PromptRenderer.java         # Jinja2 模板渲染
+│   │       ├── OpenAiProvider.java
+│   │       └── dto/
+│   ├── tool/                           # Tool Calling 支持
+│   │   ├── Tool.java                   # 工具接口
+│   │   ├── ToolDefinition.java         # 工具定义 DTO
+│   │   ├── ToolCall.java               # 工具调用 DTO
+│   │   ├── ToolResult.java             # 工具结果 DTO
+│   │   ├── ToolRegistry.java           # 工具注册表
+│   │   ├── ToolExecutor.java           # 工具执行器
+│   │   └── builtin/                    # 内置工具
+│   │       └── CalculatorTool.java     # 数学计算器
+│   ├── template/
+│   │   └── PromptRenderer.java         # Jinja2 模板渲染
+│   └── ui/                             # 终端 UI
+│       ├── TerminalManager.java
+│       ├── ScreenDrawer.java
+│       └── DisplayMessage.java
 ├── src/main/resources/
 │   ├── application.yml
 │   └── prompts/

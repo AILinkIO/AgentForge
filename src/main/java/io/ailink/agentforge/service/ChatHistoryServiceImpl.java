@@ -1,8 +1,5 @@
 package io.ailink.agentforge.service;
 
-import io.ailink.agentforge.llm.dto.ChatMessage;
-import io.ailink.agentforge.llm.dto.ChatRequest;
-import io.ailink.agentforge.llm.LlmProvider;
 import io.ailink.agentforge.persistence.entity.ChatMessageEntity;
 import io.ailink.agentforge.persistence.entity.DailySummaryEntity;
 import io.ailink.agentforge.persistence.repository.ChatMessageRepository;
@@ -16,7 +13,6 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * 聊天历史服务实现
@@ -30,7 +26,7 @@ import java.util.stream.Collectors;
  * 依赖组件：
  * - ChatMessageRepository: 消息数据访问
  * - DailySummaryRepository: 总结数据访问
- * - LlmProvider: LLM服务（用于生成总结）
+ * - SummaryGenerator: LLM总结生成（关注点分离）
  */
 @Service
 public class ChatHistoryServiceImpl implements ChatHistoryService {
@@ -39,21 +35,21 @@ public class ChatHistoryServiceImpl implements ChatHistoryService {
 
     private final ChatMessageRepository chatMessageRepository;
     private final DailySummaryRepository dailySummaryRepository;
-    private final LlmProvider llmProvider;
+    private final SummaryGenerator summaryGenerator;
 
     /**
      * 构造函数，Spring 自动注入依赖
      *
-     * @param chatMessageRepository    消息数据访问接口
-     * @param dailySummaryRepository   总结数据访问接口
-     * @param llmProvider            LLM服务接口
+     * @param chatMessageRepository 消息数据访问接口
+     * @param dailySummaryRepository 总结数据访问接口
+     * @param summaryGenerator      总结生成器
      */
     public ChatHistoryServiceImpl(ChatMessageRepository chatMessageRepository,
-                                  DailySummaryRepository dailySummaryRepository,
-                                  LlmProvider llmProvider) {
+                                   DailySummaryRepository dailySummaryRepository,
+                                   SummaryGenerator summaryGenerator) {
         this.chatMessageRepository = chatMessageRepository;
         this.dailySummaryRepository = dailySummaryRepository;
-        this.llmProvider = llmProvider;
+        this.summaryGenerator = summaryGenerator;
     }
 
     /**
@@ -161,36 +157,13 @@ public class ChatHistoryServiceImpl implements ChatHistoryService {
     @Override
     @Transactional
     public DailySummaryEntity generateDailySummary(LocalDate date) {
-        // 获取当天的所有消息
         List<ChatMessageEntity> messages = getMessagesByDate(date);
         if (messages.isEmpty()) {
             throw new IllegalArgumentException("No messages found for date: " + date);
         }
 
-        // 将对话格式化为文本
-        String conversationText = messages.stream()
-                .map(m -> m.getRole() + ": " + m.getContent())
-                .collect(Collectors.joining("\n\n"));
+        String summaryText = summaryGenerator.generateSummary(messages);
 
-        // 构建总结提示词
-        String summarizationPrompt = String.format(
-                "你是一个对话总结专家。请简洁地总结以下对话的要点：\n1. 用户主要询问了什么问题？\n2. AI给出了什么关键回答？\n请用2-3句话总结。\n\n对话内容：\n%s",
-                conversationText);
-
-        // 调用 LLM 生成总结
-        ChatRequest request = ChatRequest.builder()
-                .system("你是一个对话总结专家。")
-                .messages(List.of(ChatMessage.user(summarizationPrompt)))
-                .build();
-
-        StringBuilder summaryBuilder = new StringBuilder();
-        llmProvider.chatStream(request)
-                .doOnNext(chunk -> summaryBuilder.append(chunk))
-                .blockLast();
-
-        String summaryText = summaryBuilder.toString().trim();
-
-        // 检查是否已存在总结，存在则更新，不存在则创建
         DailySummaryEntity existing = dailySummaryRepository.findBySummaryDate(date).orElse(null);
         if (existing != null) {
             existing.setSummary(summaryText);
