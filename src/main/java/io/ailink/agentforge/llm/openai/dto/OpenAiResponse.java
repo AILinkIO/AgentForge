@@ -22,7 +22,26 @@ public record OpenAiResponse(
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Message(String role, String content) {
+    public record Message(
+            String role,
+            String content,
+            @JsonProperty("tool_calls") List<ToolCall> toolCalls
+    ) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ToolCall(
+            String id,
+            String type,
+            Function function
+    ) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Function(
+            String name,
+            String arguments
+    ) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

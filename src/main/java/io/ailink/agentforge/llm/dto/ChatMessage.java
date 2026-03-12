@@ -1,42 +1,45 @@
 package io.ailink.agentforge.llm.dto;
 
+import io.ailink.agentforge.tool.ToolCall;
+
+import java.util.List;
+
 /**
  * 聊天消息数据传输对象
  *
- * 用于在 LLM 请求和响应中传递消息。
- *
- * @param role    消息角色：user(用户), assistant(助手), system(系统)
- * @param content 消息内容
+ * @param role       消息角色：user, assistant, system, tool
+ * @param content    消息内容
+ * @param toolCalls  assistant 消息的工具调用列表
+ * @param toolCallId tool 消息关联的工具调用 ID
  */
-public record ChatMessage(String role, String content) {
+public record ChatMessage(
+        String role,
+        String content,
+        List<ToolCall> toolCalls,
+        String toolCallId
+) {
 
-    /**
-     * 创建用户消息
-     *
-     * @param content 消息内容
-     * @return 用户消息
-     */
     public static ChatMessage user(String content) {
-        return new ChatMessage("user", content);
+        return new ChatMessage("user", content, null, null);
     }
 
-    /**
-     * 创建助手消息
-     *
-     * @param content 消息内容
-     * @return 助手消息
-     */
     public static ChatMessage assistant(String content) {
-        return new ChatMessage("assistant", content);
+        return new ChatMessage("assistant", content, null, null);
     }
 
-    /**
-     * 创建系统消息
-     *
-     * @param content 消息内容
-     * @return 系统消息
-     */
+    public static ChatMessage assistantWithTools(String content, List<ToolCall> toolCalls) {
+        return new ChatMessage("assistant", content, toolCalls, null);
+    }
+
+    public static ChatMessage toolResult(String toolCallId, String content) {
+        return new ChatMessage("tool", content, null, toolCallId);
+    }
+
     public static ChatMessage system(String content) {
-        return new ChatMessage("system", content);
+        return new ChatMessage("system", content, null, null);
+    }
+
+    public boolean hasToolCalls() {
+        return toolCalls != null && !toolCalls.isEmpty();
     }
 }

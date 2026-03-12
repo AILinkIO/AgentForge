@@ -1,7 +1,9 @@
 package io.ailink.agentforge.llm;
 
+import io.ailink.agentforge.llm.claude.ClaudeProvider;
 import io.ailink.agentforge.llm.dto.ChatRequest;
 import io.ailink.agentforge.llm.dto.ChatResponse;
+import io.ailink.agentforge.llm.openai.OpenAiProvider;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 

@@ -2,27 +2,31 @@ package io.ailink.agentforge.llm;
 
 import io.ailink.agentforge.llm.dto.ChatResponse;
 import io.ailink.agentforge.llm.dto.TokenUsage;
+import io.ailink.agentforge.tool.ToolCall;
 
-/**
- * 简单聊天响应实现
- *
- * 提供基本的响应数据封装。
- */
+import java.util.Collections;
+import java.util.List;
+
 public record SimpleChatResponse(
         String id,
         String content,
         String model,
         String stopReason,
-        TokenUsage usage
+        TokenUsage usage,
+        List<ToolCall> toolCalls
 ) implements ChatResponse<Void> {
 
-    /**
-     * 获取原始响应
-     *
-     * @return null（简单实现不保留原始响应）
-     */
+    public SimpleChatResponse(String id, String content, String model, String stopReason, TokenUsage usage) {
+        this(id, content, model, stopReason, usage, Collections.emptyList());
+    }
+
     @Override
     public Void rawResponse() {
         return null;
+    }
+
+    @Override
+    public boolean hasToolCalls() {
+        return toolCalls != null && !toolCalls.isEmpty();
     }
 }

@@ -130,7 +130,7 @@ public class ANSIScreenDrawer implements ScreenDrawer {
             // 时间前缀
             writer.print(COLOR_GRAY);
             writer.print("[");
-            writer.print(msg.getTime());
+            writer.print(msg.time());
             writer.print("]");
             writer.print(COLOR_RESET);
             writer.print(" ");
@@ -147,7 +147,7 @@ public class ANSIScreenDrawer implements ScreenDrawer {
             writer.print(": ");
 
             // 绘制内容（处理换行）
-            drawWrappedText(msg.getContent(), maxWidth - 5, "     ");
+            drawWrappedText(msg.content(), maxWidth - 5, "     ");
             writer.println();
 
             currentRow++;

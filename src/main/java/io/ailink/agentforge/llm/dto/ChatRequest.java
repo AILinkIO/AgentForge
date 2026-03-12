@@ -1,44 +1,33 @@
 package io.ailink.agentforge.llm.dto;
 
+import io.ailink.agentforge.tool.ToolCall;
+import io.ailink.agentforge.tool.ToolDefinition;
+
 import java.util.List;
 
 /**
  * 聊天请求数据传输对象
- *
- * 封装发送给 LLM 的请求参数。
- *
- * @param messages   消息列表
- * @param model      模型名称
- * @param system    系统提示词
- * @param maxTokens 最大生成 token 数量
- * @param temperature 温度参数（0-2），越高越随机
  */
 public record ChatRequest(
         List<ChatMessage> messages,
         String model,
         String system,
         Integer maxTokens,
-        Double temperature
+        Double temperature,
+        List<ToolDefinition> tools
 ) {
 
-    /**
-     * 创建请求构建器
-     *
-     * @return 请求构建器
-     */
     public static Builder builder() {
         return new Builder();
     }
 
-    /**
-     * 请求构建器
-     */
     public static class Builder {
         private List<ChatMessage> messages;
         private String model;
         private String system;
         private Integer maxTokens;
         private Double temperature;
+        private List<ToolDefinition> tools;
 
         public Builder messages(List<ChatMessage> messages) {
             this.messages = messages;
@@ -65,8 +54,17 @@ public record ChatRequest(
             return this;
         }
 
-        public ChatRequest build() {
-            return new ChatRequest(messages, model, system, maxTokens, temperature);
+        public Builder tools(List<ToolDefinition> tools) {
+            this.tools = tools;
+            return this;
         }
+
+        public ChatRequest build() {
+            return new ChatRequest(messages, model, system, maxTokens, temperature, tools);
+        }
+    }
+
+    public boolean hasTools() {
+        return tools != null && !tools.isEmpty();
     }
 }
