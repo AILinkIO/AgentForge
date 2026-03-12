@@ -45,7 +45,7 @@ public class ANSIScreenDrawer implements ScreenDrawer {
     private static final String COLOR_CYAN = "\u001B[36m";    // 青色 - 标题
     private static final String COLOR_GREEN = "\u001B[32m";   // 绿色 - 用户
     private static final String COLOR_PURPLE = "\u001B[35m";  // 紫色 - 助手
-    private static final String COLOR_YELLOW = "\u001B[33m";  // 黄色 - 退出
+    private static final String COLOR_YELLOW = "\u001B[33m";  
     private static final String COLOR_GRAY = "\u001B[90m";    // 灰色 - 提示
     private static final String COLOR_BOLD = "\u001B[1m";     // 高亮
     private static final String COLOR_RESET = "\u001B[0m";    // 重置
@@ -134,6 +134,15 @@ public class ANSIScreenDrawer implements ScreenDrawer {
             writer.print("]");
             writer.print(COLOR_RESET);
             writer.print(" ");
+
+            if (msg.isTool()) {
+                writer.print(COLOR_YELLOW);
+                writer.print(msg.content());
+                writer.print(COLOR_RESET);
+                writer.println();
+                currentRow++;
+                continue;
+            }
 
             // 角色前缀和消息内容
             if (msg.isUser()) {

@@ -1,31 +1,31 @@
 spring:
-  main:
-    web-application-type: none
-    banner-mode: off
-  application:
-    name: AgentForge
-  datasource:
-    url: jdbc:h2:file:./data/agentforge
-    driver-class-name: org.h2.Driver
-  jpa:
-    hibernate:
-      ddl-auto: update
-    show-sql: false
+    main:
+        web-application-type: none
+        banner-mode: off
+    application:
+        name: AgentForge
+    datasource:
+        url: jdbc:h2:file:./data/agentforge
+        driver-class-name: org.h2.Driver
+    jpa:
+        hibernate:
+            ddl-auto: update
+        show-sql: false
 
 logging:
-  level:
-    root: warn
+    level:
+        root: warn
 
 agentforge:
-  llm:
-    provider: ${LLM_PROVIDER:}
-    claude:
-      api-key: ${ANTHROPIC_AUTH_TOKEN:}
-      base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
-      default-model: claude-sonnet-4-20250514
-      default-max-tokens: 1024
-    openai:
-      api-key: ${OPENAI_API_KEY:}
-      base-url: https://api.openai.com
-      default-model: gpt-4o
-      default-max-tokens: 1024
+    llm:
+        provider: ${LLM_PROVIDER:}
+        claude:
+            api-key: ${ANTHROPIC_AUTH_TOKEN:}
+            base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
+            default-model: MiniMax-M2.5
+            default-max-tokens: 16384
+        openai:
+            api-key: ${OPENAI_API_KEY:}
+            base-url: https://api.openai.com
+            default-model: gpt-4o
+            default-max-tokens: 16384
