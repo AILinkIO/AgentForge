@@ -116,19 +116,70 @@ public class ChatSession {
     }
 
     /**
-     * 处理聊天消息
-     * 
+     * 处理聊天消息（增量输出，不做全屏重绘）
+     *
+     * 流程：回显用户输入 → 思考中 → 工具调用状态 → 流式助手回复
+     *
      * @param input 用户输入
      */
     private void processChatMessage(String input) {
-        // 显示思考中
-        screenDrawer.drawChatScreen(conversationState.getDisplayMessages(), "\u001B[90m思考中...\u001B[0m");
+        var writer = terminalManager.getWriter();
 
-        // 处理消息并获取响应
-        String responseText = messageProcessor.processMessage(input, conversationState);
+        // 1. 回显用户输入
+        String time = java.time.LocalTime.now().withNano(0).toString();
+        writer.println("\u001B[90m[" + time + "]\u001B[0m \u001B[32m你\u001B[0m: " + input);
 
-        // 绘制最终界面
-        screenDrawer.drawChatScreen(conversationState.getDisplayMessages(), "");
+        // 2. 显示思考中（不换行，后续可被覆盖）
+        writer.print("\u001B[90m思考中...\u001B[0m");
+        writer.flush();
+
+        // 3. 事件监听器：工具状态 + 流式输出
+        ChatEventListener listener = new ChatEventListener() {
+            @Override
+            public void onToolExecuting(String toolName) {
+                // 清除当前行的 "思考中..." 并显示工具调用
+                writer.print("\r\u001B[K");
+                writer.println("\u001B[33m  -> 正在调用工具: " + toolName + "...\u001B[0m");
+                writer.flush();
+            }
+
+            @Override
+            public void onToolResult(String toolName, String result) {
+                writer.println("\u001B[33m  <- " + result + "\u001B[0m");
+                // 工具执行完后继续显示思考中（等待下一轮 LLM 调用）
+                writer.print("\u001B[90m思考中...\u001B[0m");
+                writer.flush();
+            }
+
+            @Override
+            public void onStreamingStart() {
+                // 清除 "思考中..." 并显示助手前缀
+                writer.print("\r\u001B[K");
+                String t = java.time.LocalTime.now().withNano(0).toString();
+                writer.print("\u001B[90m[" + t + "]\u001B[0m \u001B[35m助手\u001B[0m: ");
+                writer.flush();
+            }
+
+            @Override
+            public void onStreamingToken(String token) {
+                writer.print(token);
+                writer.flush();
+            }
+
+            @Override
+            public void onStreamingEnd() {
+                writer.println();
+                writer.flush();
+            }
+        };
+
+        try {
+            messageProcessor.processMessage(input, conversationState, listener);
+        } catch (Exception e) {
+            writer.print("\r\u001B[K");
+            writer.println("\u001B[31m错误: " + e.getMessage() + "\u001B[0m");
+            writer.flush();
+        }
     }
 
     /**

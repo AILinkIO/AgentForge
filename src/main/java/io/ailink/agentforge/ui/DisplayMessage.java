@@ -29,4 +29,13 @@ public record DisplayMessage(
     public boolean isAssistant() {
         return "assistant".equals(role());
     }
+
+    /**
+     * 判断是否为工具消息
+     *
+     * @return true 如果是工具消息
+     */
+    public boolean isTool() {
+        return "tool".equals(role());
+    }
 }
