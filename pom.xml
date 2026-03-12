@@ -85,6 +85,13 @@
             <version>3.27.0</version>
         </dependency>
 
+        <!-- Javaluator for expression evaluation -->
+        <dependency>
+            <groupId>com.fathzer</groupId>
+            <artifactId>javaluator</artifactId>
+            <version>3.0.4</version>
+        </dependency>
+
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
