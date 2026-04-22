@@ -11,21 +11,24 @@ spring:
         hibernate:
             ddl-auto: update
         show-sql: false
+    ai:
+        model:
+            chat: ${LLM_PROVIDER:claude}
+        openai:
+            api-key: ${OPENAI_API_KEY:}
+            base-url: https://api.openai.com
+            chat:
+                options:
+                    model: gpt-4o
+                    max-tokens: 16384
+        anthropic:
+            api-key: ${ANTHROPIC_AUTH_TOKEN:}
+            base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
+            chat:
+                options:
+                    model: MiniMax-M2.5
+                    max-tokens: 16384
 
 logging:
     level:
         root: warn
-
-agentforge:
-    llm:
-        provider: ${LLM_PROVIDER:}
-        claude:
-            api-key: ${ANTHROPIC_AUTH_TOKEN:}
-            base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
-            default-model: MiniMax-M2.5
-            default-max-tokens: 16384
-        openai:
-            api-key: ${OPENAI_API_KEY:}
-            base-url: https://api.openai.com
-            default-model: gpt-4o
-            default-max-tokens: 16384
