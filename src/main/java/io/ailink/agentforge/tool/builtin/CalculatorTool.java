@@ -1,16 +1,15 @@
 package io.ailink.agentforge.tool.builtin;
 
 import com.fathzer.soft.javaluator.*;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.ailink.agentforge.tool.Tool;
-import io.ailink.agentforge.tool.ToolResult;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
 import java.util.Iterator;
 
 @Component
-public class CalculatorTool implements Tool {
+public class CalculatorTool {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     
@@ -106,61 +105,23 @@ public class CalculatorTool implements Tool {
         };
     }
 
-    @Override
-    public String name() {
-        return "calculator";
-    }
-
-    @Override
-    public String description() {
-        return "执行数学计算。支持基本运算(+、-、*、/)和数学函数(如 sqrt, pow, sin 等)。";
-    }
-
-    @Override
-    public JsonNode inputSchema() {
-        String schema = """
-            {
-                "type": "object",
-                "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "要计算的数学表达式，例如: '2 + 3 * 4' 或 'sqrt(16)' 或 'pow(2, 10)'"
-                    }
-                },
-                "required": ["expression"]
-            }
-            """;
-        try {
-            return objectMapper.readTree(schema);
-        } catch (Exception e) {
-            return objectMapper.createObjectNode();
-        }
-    }
-
-    @Override
-    public ToolResult execute(JsonNode arguments) {
-        if (arguments == null || !arguments.has("expression")) {
-            return ToolResult.error(null, "缺少必需参数: expression");
-        }
-
-        String expression = arguments.get("expression").asText();
-        
+    @Tool(description = "执行数学计算。支持基本运算(+、-、*、/)和数学函数(如 sqrt, pow, sin 等)。")
+    public String calculate(@ToolParam(description = "要计算的数学表达式，例如: '2 + 3 * 4' 或 'sqrt(16)' 或 'pow(2, 10)'") String expression) {
         if (expression == null || expression.isBlank()) {
-            return ToolResult.error(null, "表达式不能为空");
+            return "错误: 表达式不能为空";
         }
 
         // 安全检查：只允许数字、运算符、空格和函数
         String sanitized = expression.trim();
         if (!isValidExpression(sanitized)) {
-            return ToolResult.error(null, "表达式包含不允许的字符");
+            return "错误: 表达式包含不允许的字符";
         }
 
         try {
             Double result = evaluator.evaluate(sanitized);
-            String resultStr = formatResult(result);
-            return ToolResult.success(null, resultStr);
+            return formatResult(result);
         } catch (Exception e) {
-            return ToolResult.error(null, "计算错误: " + e.getMessage());
+            return "计算错误: " + e.getMessage();
         }
     }
 
