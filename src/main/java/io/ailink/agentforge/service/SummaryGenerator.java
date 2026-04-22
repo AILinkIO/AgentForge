@@ -1,12 +1,10 @@
 package io.ailink.agentforge.service;
 
-import io.ailink.agentforge.llm.LlmProvider;
-import io.ailink.agentforge.llm.dto.ChatMessage;
-import io.ailink.agentforge.llm.dto.ChatRequest;
 import io.ailink.agentforge.persistence.entity.ChatMessageEntity;
 import io.ailink.agentforge.persistence.repository.ChatMessageRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -17,12 +15,12 @@ public class SummaryGenerator {
 
     private static final Logger log = LoggerFactory.getLogger(SummaryGenerator.class);
 
-    private final LlmProvider llmProvider;
+    private final ChatClient chatClient;
     private final ChatMessageRepository chatMessageRepository;
 
-    public SummaryGenerator(LlmProvider llmProvider,
+    public SummaryGenerator(ChatClient.Builder chatClientBuilder,
                             ChatMessageRepository chatMessageRepository) {
-        this.llmProvider = llmProvider;
+        this.chatClient = chatClientBuilder.build();
         this.chatMessageRepository = chatMessageRepository;
     }
 
@@ -39,13 +37,12 @@ public class SummaryGenerator {
                 "你是一个对话总结专家。请简洁地总结以下对话的要点：\n1. 用户主要询问了什么问题？\n2. AI给出了什么关键回答？\n请用2-3句话总结。\n\n对话内容：\n%s",
                 conversationText);
 
-        ChatRequest request = ChatRequest.builder()
-                .system("你是一个对话总结专家。")
-                .messages(List.of(ChatMessage.user(summarizationPrompt)))
-                .build();
-
         StringBuilder summaryBuilder = new StringBuilder();
-        llmProvider.chatStream(request)
+        chatClient.prompt()
+                .system("你是一个对话总结专家。")
+                .user(summarizationPrompt)
+                .stream()
+                .content()
                 .doOnNext(chunk -> summaryBuilder.append(chunk))
                 .blockLast();
 
