@@ -3,16 +3,15 @@ package io.ailink.agentforge.cli;
 import io.ailink.agentforge.cli.chat.ChatSession;
 import io.ailink.agentforge.cli.chat.ConversationState;
 import io.ailink.agentforge.cli.chat.MessageProcessor;
-import io.ailink.agentforge.llm.LlmProvider;
 import io.ailink.agentforge.llm.dto.ChatMessage;
 import io.ailink.agentforge.service.ChatHistoryService;
-import io.ailink.agentforge.tool.ToolExecutor;
-import io.ailink.agentforge.tool.ToolRegistry;
+import io.ailink.agentforge.tool.builtin.CalculatorTool;
 import io.ailink.agentforge.ui.ANSIScreenDrawer;
 import io.ailink.agentforge.ui.DisplayMessage;
 import io.ailink.agentforge.ui.JLineTerminalManager;
 import io.ailink.agentforge.ui.ScreenDrawer;
 import io.ailink.agentforge.ui.TerminalManager;
+import org.springframework.ai.chat.client.ChatClient;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
@@ -27,10 +26,9 @@ import java.util.List;
 @Command(name = "chat", mixinStandardHelpOptions = true, description = "交互式对话模式")
 public class ChatCommand implements Runnable {
 
-    private final LlmProvider llmProvider;
+    private final ChatClient.Builder chatClientBuilder;
+    private final CalculatorTool calculatorTool;
     private final ChatHistoryService chatHistoryService;
-    private final ToolRegistry toolRegistry;
-    private final ToolExecutor toolExecutor;
 
     @Option(names = {"--system"}, description = "自定义系统提示词")
     private String systemPrompt = "你是一个知识问答助手，请根据用户的问题提供准确、有用的回答。";
@@ -44,12 +42,11 @@ public class ChatCommand implements Runnable {
     @Option(names = {"--summary"}, description = "查看今日总结")
     private boolean showSummary;
 
-    public ChatCommand(LlmProvider llmProvider, ChatHistoryService chatHistoryService,
-                      ToolRegistry toolRegistry, ToolExecutor toolExecutor) {
-        this.llmProvider = llmProvider;
+    public ChatCommand(ChatClient.Builder chatClientBuilder, CalculatorTool calculatorTool,
+                      ChatHistoryService chatHistoryService) {
+        this.chatClientBuilder = chatClientBuilder;
+        this.calculatorTool = calculatorTool;
         this.chatHistoryService = chatHistoryService;
-        this.toolRegistry = toolRegistry;
-        this.toolExecutor = toolExecutor;
     }
 
     @Override
@@ -87,7 +84,7 @@ public class ChatCommand implements Runnable {
 
             // 创建消息处理器
             MessageProcessor messageProcessor = new MessageProcessor(
-                    llmProvider, toolRegistry, toolExecutor,
+                    chatClientBuilder, calculatorTool,
                     chatHistoryService, systemPrompt);
 
             // 创建并启动会话

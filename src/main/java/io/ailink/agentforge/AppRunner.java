@@ -2,11 +2,10 @@ package io.ailink.agentforge;
 
 import io.ailink.agentforge.cli.ChatCommand;
 import io.ailink.agentforge.cli.HistoryCommand;
-import io.ailink.agentforge.llm.LlmProvider;
 import io.ailink.agentforge.service.ChatHistoryService;
 import io.ailink.agentforge.template.PromptRenderer;
-import io.ailink.agentforge.tool.ToolExecutor;
-import io.ailink.agentforge.tool.ToolRegistry;
+import io.ailink.agentforge.tool.builtin.CalculatorTool;
+import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 import picocli.CommandLine;
@@ -17,26 +16,23 @@ import picocli.CommandLine.Command;
         description = "AgentForge AI工具集")
 public class AppRunner implements CommandLineRunner, Runnable {
 
-    private final LlmProvider llmProvider;
+    private final ChatClient.Builder chatClientBuilder;
+    private final CalculatorTool calculatorTool;
     private final PromptRenderer promptRenderer;
     private final ChatHistoryService chatHistoryService;
-    private final ToolRegistry toolRegistry;
-    private final ToolExecutor toolExecutor;
 
-    public AppRunner(LlmProvider llmProvider, PromptRenderer promptRenderer, 
-                     ChatHistoryService chatHistoryService,
-                     ToolRegistry toolRegistry, ToolExecutor toolExecutor) {
-        this.llmProvider = llmProvider;
+    public AppRunner(ChatClient.Builder chatClientBuilder, CalculatorTool calculatorTool,
+                     PromptRenderer promptRenderer, ChatHistoryService chatHistoryService) {
+        this.chatClientBuilder = chatClientBuilder;
+        this.calculatorTool = calculatorTool;
         this.promptRenderer = promptRenderer;
         this.chatHistoryService = chatHistoryService;
-        this.toolRegistry = toolRegistry;
-        this.toolExecutor = toolExecutor;
     }
 
     @Override
     public void run(String... args) {
         CommandLine cmd = new CommandLine(this)
-                .addSubcommand(new ChatCommand(llmProvider, chatHistoryService, toolRegistry, toolExecutor))
+                .addSubcommand(new ChatCommand(chatClientBuilder, calculatorTool, chatHistoryService))
                 .addSubcommand(new HistoryCommand(chatHistoryService));
         cmd.execute(args);
     }
