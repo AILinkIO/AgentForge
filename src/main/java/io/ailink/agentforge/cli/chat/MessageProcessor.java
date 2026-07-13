@@ -143,8 +143,10 @@ public class MessageProcessor {
                                 .map(tc -> new AssistantMessage.ToolCall(
                                         tc.id(), "function", tc.name(), tc.arguments()))
                                 .toList();
-                        messages.add(new AssistantMessage(
-                                cm.content(), null, toolCalls));
+                        messages.add(AssistantMessage.builder()
+                                .content(cm.content())
+                                .toolCalls(toolCalls)
+                                .build());
                     } else {
                         messages.add(new AssistantMessage(cm.content()));
                     }
@@ -152,7 +154,9 @@ public class MessageProcessor {
                 case "tool" -> {
                     var response = new ToolResponseMessage.ToolResponse(
                             cm.toolCallId(), "tool", cm.content());
-                    messages.add(new ToolResponseMessage(List.of(response)));
+                    messages.add(ToolResponseMessage.builder()
+                            .responses(List.of(response))
+                            .build());
                 }
                 case "system" ->
                     messages.add(new SystemMessage(cm.content()));
