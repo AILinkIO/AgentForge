@@ -1,7 +1,6 @@
 package io.ailink.agentforge.tool.builtin;
 
 import com.fathzer.soft.javaluator.*;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -11,8 +10,6 @@ import java.util.Iterator;
 @Component
 public class CalculatorTool {
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
-    
     // Custom functions for Javaluator
     private static final Function SQRT = new Function("sqrt", 1);
     private static final Function POW = new Function("pow", 2);
