@@ -1,3 +1,21 @@
 #!/usr/bin/env bash
+# AgentForge 启动器：无子命令 = 全屏 TUI 工作台；agent / chat / history 等子命令照旧。
+#
+# ⚠️ 从 jar 的**副本**运行：Spring Boot 的 fat jar 是按需加载类的，构建时直接覆盖 app-cli/build/libs/agentforge.jar
+#    会让正在跑的实例在之后第一次用到新类时 NoClassDefFoundError（典型是退出时保存会话）。副本按 jar 的大小 + 修改时间
+#    命名，重新构建只会生成新副本，旧实例照用旧的那份；旧副本只保留最近 3 份。
 DIR="$(cd "$(dirname "$0")" && pwd)"
-exec java -jar "$DIR/target/agentforge.jar" "$@"
+SRC="$DIR/app-cli/build/libs/agentforge.jar"
+[ -f "$SRC" ] || { echo "找不到 $SRC，先构建：./gradlew :app-cli:bootJar -Pbitcask.lib=/path/libbitcask.so" >&2; exit 1; }
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/agentforge/jars"
+mkdir -p "$CACHE"
+STAMP="$(stat -c '%s-%Y' "$SRC" 2>/dev/null || stat -f '%z-%m' "$SRC")"
+JAR="$CACHE/agentforge-$STAMP.jar"
+if [ ! -f "$JAR" ]; then
+  cp "$SRC" "$JAR.tmp.$$" && mv -f "$JAR.tmp.$$" "$JAR"
+  ls -1t "$CACHE"/agentforge-*.jar 2>/dev/null | tail -n +4 | xargs -r rm -f
+fi
+OPTS=(--enable-native-access=ALL-UNNAMED)
+# 沙盒原生件（Landlock / seccomp / 代理桥），./gradlew :sandbox:buildNative 编出；没有也能跑（只用 bwrap）
+[ -f "$DIR/sandbox/build/native/libagentforge_sandbox_native.so" ] && OPTS+=("-Dagentforge.sandbox.native.dir=$DIR/sandbox/build/native")
+exec java "${OPTS[@]}" -jar "$JAR" "$@"
