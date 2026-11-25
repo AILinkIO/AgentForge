@@ -274,8 +274,9 @@ final class Display {
     private int[] drawEcho(Grid g) {
         int sr = ed.rows - 1;
         // echo-area = overlay：没东西要说就不画（那一行归窗口）；有话说时整行盖上
+        boolean hostMsg = ed.echoByHost() && !ed.awaitingKey();
         if (ed.echoOverlay() && ed.mb == null && ed.isearch == null && !ed.escPrefix && ed.pending.isEmpty()
-                && prefixArgDesc() == null && (ed.message == null || ed.message.isEmpty())) return null;
+                && prefixArgDesc() == null && (ed.message == null || ed.message.isEmpty() || hostMsg)) return null;
         if (!(ed.echoOverlay() && ed.mb == null && ed.isearch == null && !ed.escPrefix && ed.pending.isEmpty() && prefixArgDesc() == null))
             g.fill(sr, 0, ed.cols, f("default"));
         if (ed.mb != null) {
@@ -302,7 +303,11 @@ final class Display {
             String m = ed.message;
             int nl = m.indexOf('\n');
             String line = nl >= 0 ? m.substring(0, nl) : m;
-            if (ed.echoOverlay()) {
+            if (ed.echoByHost()) {
+                // 宿主管闪现；走到这里的是读键提问：整行盖上（不留半截提示在右边）
+                g.fill(sr, 0, ed.cols, f("default"));
+                g.putString(sr, 1, line, f("echo-message"), ed.cols - 1);
+            } else if (ed.echoOverlay()) {
                 // 叠在窗口最后一行上：只盖住消息那一截（右边的读数照样看得见）
                 int w = Math.min(ed.cols, Width.stringWidth(line) + 3);
                 g.fill(sr, 0, w, f("default"));

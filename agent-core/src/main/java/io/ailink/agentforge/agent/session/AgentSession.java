@@ -181,6 +181,10 @@ public final class AgentSession {
     private SubRun subCurrent;
     private final LinkedHashMap<String, AgentSession> children = new LinkedHashMap<>();
     private String lastCallId;
+    /** 改文件的调用动手前记下的 diff（tool-use-id ⇒ 预览格式的 diff）：没过审批的也能画真 diff；只留最近 {@link #CHANGE_DIFFS_MAX} 份。 */
+    private final LinkedHashMap<String, String> changeDiffs = new LinkedHashMap<>();
+    private static final int CHANGE_DIFFS_MAX = 200;
+    private static final java.util.Set<String> CHANGE_TOOLS = java.util.Set.of("write-file", "edit-file", "apply-patch");
     private int turnBase;
     private Long turnStart;
     private Long turnDur;
@@ -986,7 +990,13 @@ public final class AgentSession {
 
     private void noteToolCall(Turn t, Block.ToolUse tu) {
         if (!current(t)) return;
+        // 改文件的调用：趁还没动手把改动 diff 记下（before 只有现在拿得到）
+        String cd = CHANGE_TOOLS.contains(tu.name()) && tu.input() != null ? Preview.changeDiff(workspace, tu.name(), tu.input()) : null;
         synchronized (lock) {
+            if (cd != null) {
+                changeDiffs.put(tu.id(), cd);
+                while (changeDiffs.size() > CHANGE_DIFFS_MAX) changeDiffs.remove(changeDiffs.firstEntry().getKey());
+            }
             lastCallId = tu.id();
             flushSegment();
             turnLog.add(Transcript.toolCall(tu.name(), tu.id(), tu.input(), null));
@@ -1369,6 +1379,7 @@ public final class AgentSession {
             resultStatus = null;
             subLog.clear();
             subCurrent = null;
+            changeDiffs.clear();
             failLog.clear();
             turnLog.clear();
             thinkLog.clear();
@@ -1648,6 +1659,12 @@ public final class AgentSession {
     public List<SubRun> subLog() { synchronized (lock) { return List.copyOf(subLog); } }
 
     public SubRun subCurrent() { synchronized (lock) { return subCurrent; } }
+
+    /**
+     * 某次改文件的调用（write-file / edit-file / apply-patch）动手前算下的改动 diff（格式同审批预览：每个文件一行标题 + unified diff，
+     * 带真行号）；不是改文件的调用、旧对话里的、或者算不出 ⇒ null。
+     */
+    public String changeDiff(String toolUseId) { synchronized (lock) { return toolUseId == null ? null : changeDiffs.get(toolUseId); } }
 
     /** 开一趟：认 {@code toolUseId}（null = 最近那次工具调用），登记进 subLog，发 SubStart。 */
     public SubRun subBegin(String desc, String who, String toolUseId) {

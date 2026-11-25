@@ -55,7 +55,7 @@ final class QuestionPanel {
             return rows;
         });
         buf.setFooter(w -> List.of(List.of()));
-        buf.setModeLine(new ModeLine().add("hint", 10, false, c -> AgentWorkbench.keyHints(wb.panelWidth(), multiple()
+        buf.setModeLine(new ModeLine().add("hint", 10, false, c -> wb.footer(wb.panelWidth(), multiple()
                 ? new String[][]{{"1-9 SPC", Msg.t("tick")}, {"⏎", Msg.t("confirm")}, {"e", Msg.t("write my own")}, {"x", Msg.t("skip")}, {"Esc", Msg.t("dismiss")}}
                 : new String[][]{{"1-9", Msg.t("pick")}, {"↑↓ ⏎", Msg.t("confirm")}, {"e", Msg.t("write my own")}, {"x", Msg.t("skip")}, {"Esc", Msg.t("dismiss")}})));
         ed.defineInternalCommand("agent-question-digit", "提问面板：数字选 / 勾。", e -> {

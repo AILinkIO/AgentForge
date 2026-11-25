@@ -113,6 +113,8 @@ public final class AgentWorkbench {
     final QuestionPanel question;
     final SlashCommands slash;
     final ListPanel list;
+    final AgentRoster roster = new AgentRoster(this);
+    final AgentsOverview overview;
     final Mode transcriptMode = new Mode("agent-transcript-mode", "Agent", DocumentCommands.DOCUMENT_MODE);
     final Mode promptMode = new Mode("agent-input-mode", "Input", null);
 
@@ -145,7 +147,8 @@ public final class AgentWorkbench {
         this.opts = opts;
         Msg.install();
         ed.options().set("esc-prefix", false);
-        ed.options().set("echo-area", "overlay");
+        // 消息不叠在提示行上（会盖住左半截键位）：交给底栏闪现（Codex footer flash），读键提问才整行盖上
+        ed.options().set("echo-area", "host");
         ed.options().set("completion-display", "above-window");
 
         transcript = ed.getOrCreateBuffer("*agent*");
@@ -198,18 +201,21 @@ public final class AgentWorkbench {
         view = new TranscriptView(transcript, new Blocks.Ctx() {
             @Override public String fullResult(String id) { return fullResults.get(id); }
             @Override public SubRun subRun(String id) { return findRun(id); }
+            @Override public String runLabel(String id) { return roster.label(id); }
+            @Override public String runFace(String id) { return roster.face(id); }
             @Override public List<GalleryImage> images(String owner) { return imagesFor(owner); }
             @Override public void enterChild(Editor e, String runId) { enterRun(runId); }
             @Override public void openImage(Editor e, GalleryImage g) { AgentWorkbench.this.openImage(g); }
             @Override public int width() { return Math.max(20, ed.textSize(tw)[0]); }
             @Override public void openLink(Editor e, String url) { AgentWorkbench.this.openLink(url); }
             @Override public Long toolMs(String id) { return AgentWorkbench.this.toolMs(id); }
-            @Override public String patchPreview(String id) { return id == null ? null : previews.get(id); }
+            @Override public String patchPreview(String id) { return changePreview(id); }
             @Override public String rel(String path) { return relPath(path); }
         });
         approval = new ApprovalPanel(this, ed);
         question = new QuestionPanel(this, ed);
         list = new ListPanel(this, ed);
+        overview = new AgentsOverview(this, ed);
         slash = new SlashCommands(this);
 
         installCommands();
@@ -262,6 +268,7 @@ public final class AgentWorkbench {
             case SessionEvent.ApprovalResolved g -> ed.post(() -> { if (approval.request() != null && approval.request().id().equals(g.request().id())) approval.hide(); });
             case SessionEvent.Question q -> ed.post(() -> question.show(q.request()));
             case SessionEvent.QuestionAnswered q -> ed.post(question::hide);
+            case SessionEvent.SubStart ss -> ed.post(this::startTicker);
             case SessionEvent.Retry r -> ed.post(() -> note(Msg.f("⚠ retry %d/%d (in %d ms): %s", r.attempt(), r.max(), r.waitMs(), r.message()), "warning"));
             case SessionEvent.Requeued q -> ed.post(() -> requeue(q.text()));
             case SessionEvent.Error er -> ed.post(() -> {
@@ -290,13 +297,13 @@ public final class AgentWorkbench {
         storeTitle = null;
         escArmedAt = -1;
         turnStartedAt = -1;
-        if (ticker != null && !root.busy()) { ticker.cancel(); ticker = null; }
+        if (ticker != null && !root.busy() && !roster.anyRunning()) { ticker.cancel(); ticker = null; }
     }
 
     private void startTicker() {
         if (ticker != null) return;
         ticker = ed.runEvery(100, 100, () -> {
-            if (!root.busy() && (viewing == root || !viewing.busy())) { ticker.cancel(); ticker = null; }
+            if (!root.busy() && (viewing == root || !viewing.busy()) && !roster.anyRunning()) { ticker.cancel(); ticker = null; }
             refresh();
         });
     }
@@ -318,6 +325,7 @@ public final class AgentWorkbench {
             if (q == null && question.active()) question.hide();
         }
         if (sw != null) renderSide();
+        if (overview.active()) overview.render();
         String bf = barFace();
         if (!bf.equals(prompt.get("line-prefix-face"))) prompt.put("line-prefix-face", bf);
         String ph = inChild() ? Msg.t("Message the main conversation…") : root.busy() ? Msg.t("Add to the conversation (⏎ queues, /steer sends now)")
@@ -338,7 +346,7 @@ public final class AgentWorkbench {
             if (out.isEmpty()) out.add(Blocks.Live.note(Msg.t("(this run left no record)"), null));
             return out;
         }
-        List<Entry> base = s.transcript();
+        List<Entry> base = Transcript.spliceSubagents(s.transcript(), s.subLog());
         trackTools(base);
         if (s == root) {
             out.add(headerCard());
@@ -364,9 +372,53 @@ public final class AgentWorkbench {
             ApprovalRequest r = root.pendingApproval();
             if (r != null && r.toolUseId() != null && r.preview() != null && r.preview().kind() == io.ailink.agentforge.agent.tools.Preview.Kind.DIFF
                     && r.preview().text() != null) previews.put(r.toolUseId(), r.preview().text());
-            if (r != null) out.add(Blocks.Live.approval(r, r.session() != null && !r.session().equals(root.id()) ? childName(r.session()) : null));
+            if (r != null) {
+                boolean sub = r.session() != null && !r.session().equals(root.id());
+                out.add(Blocks.Live.approval(r, sub ? roster.label(r.session()) : null, sub ? roster.face(r.session()) : null));
+            }
         }
-        return withDecisions(Blocks.cells(pairResults(out)));
+        return withDecisions(Blocks.cells(pairResults(liveGroups(out))));
+    }
+
+    /**
+     * 子 agent 那格带上活的读数（正在做什么、等你什么）：值进了条目，它一变那格就重画（记录区按条目相等判断要不要重排）。
+     * 跑完的不带（那格收成摘要）。
+     */
+    private List<Entry> liveGroups(List<Entry> in) {
+        Map<String, AgentRoster.Row> live = null;
+        // 称呼的序号照记录区里的先后发（并排派的两趟：上面那格是 #1）
+        for (Entry e : in) {
+            if (!e.isCall() || e.flag("sub-step")) continue;
+            if (e.meta("group") instanceof String id) roster.label(id);
+            else if ("task".equals(e.meta("tool-name")) && e.toolUseId() != null) roster.reserve(e.toolUseId());
+        }
+        List<Entry> out = new ArrayList<>(in.size());
+        for (Entry e : in) {
+            if (e.isCall() && e.meta("group") instanceof String id && !e.flag("sub-step")) {
+                if (live == null) {
+                    live = new java.util.HashMap<>();
+                    for (AgentRoster.Row r : roster.rows()) if (!r.main()) live.put(r.id(), r);
+                }
+                AgentRoster.Row r = live.get(id);
+                if (r != null && (r.activity() != null || r.attention() != null)) {
+                    Map<String, Object> m = new java.util.LinkedHashMap<>(e.meta());
+                    if (r.activity() != null) m.put("sub-activity", r.activity());
+                    if (r.attention() != null) m.put("sub-attn", r.attention());
+                    e = new Entry(e.role(), e.text(), m);
+                }
+            }
+            out.add(e);
+        }
+        return out;
+    }
+
+    /** 改文件那格画哪份 diff：审批时看过的预览，否则会话在动手前记下的（没过审批的调用也有真 diff、真行号）。 */
+    String changePreview(String id) {
+        if (id == null) return null;
+        String p = previews.get(id);
+        if (p != null) return p;
+        if (viewing != null && viewing != root) { p = viewing.changeDiff(id); if (p != null) return p; }
+        return root == null ? null : root.changeDiff(id);
     }
 
     /** 审批结果那一行插在对应调用那格的后面。 */
@@ -393,7 +445,8 @@ public final class AgentWorkbench {
     static List<Entry> pairResults(List<Entry> in) {
         java.util.Map<String, Entry> results = new java.util.HashMap<>();
         java.util.Set<String> calls = new java.util.HashSet<>();
-        for (Entry e : in) if (e.isCall() && e.toolUseId() != null && e.meta("group") == null && !e.flag("sub-step")) calls.add(e.toolUseId());
+        // 子 agent 那格（group）也算：并排派的两趟，各自的结论跟在各自那格下面
+        for (Entry e : in) if (e.isCall() && e.toolUseId() != null && !e.flag("sub-step")) calls.add(e.toolUseId());
         for (Entry e : in) {
             if (e.role() == Entry.Role.TOOL && !e.isCall() && !e.flag("sub-step") && e.toolUseId() != null && calls.contains(e.toolUseId()))
                 results.putIfAbsent(e.toolUseId(), e);
@@ -403,7 +456,7 @@ public final class AgentWorkbench {
         for (Entry e : in) {
             if (e.role() == Entry.Role.TOOL && !e.isCall() && e.toolUseId() != null && results.get(e.toolUseId()) == e) continue;
             out.add(e);
-            if (e.isCall() && e.toolUseId() != null && e.meta("group") == null && results.containsKey(e.toolUseId())) out.add(results.get(e.toolUseId()));
+            if (e.isCall() && e.toolUseId() != null && !e.flag("sub-step") && results.containsKey(e.toolUseId())) out.add(results.get(e.toolUseId()));
         }
         return out;
     }
@@ -440,7 +493,18 @@ public final class AgentWorkbench {
             case COMPACTING -> Msg.t("Compacting the context");
             default -> {
                 List<String> running = new ArrayList<>();
-                for (Entry e : s.turnLog()) if (e.isCall() && e.meta("summary") == null) running.add(String.valueOf(e.meta("tool-name")));
+                List<String> tasks = new ArrayList<>();
+                for (Entry e : s.turnLog()) if (e.isCall() && e.meta("summary") == null) {
+                    running.add(String.valueOf(e.meta("tool-name")));
+                    if ("task".equals(e.meta("tool-name")) && e.toolUseId() != null) tasks.add(e.toolUseId());
+                }
+                // 在等子 agent（Codex：Waiting for Robie [explorer]）
+                if (!tasks.isEmpty() && tasks.size() == running.size()) {
+                    String w = tasks.size() == 1 ? Msg.f("Waiting for %s", roster.label(tasks.getFirst())) : Msg.f("Waiting for %d sub-agents", tasks.size());
+                    // ⚠️ 直接数子任务记录：roster 算"在做什么"时会回到这里（经 statusText），走 roster 就成了递归
+                    long bg = s.subLog().stream().filter(r -> r.running() && r.background()).count();
+                    yield bg > 0 ? w + Msg.f("(%d more in the background)", bg) : w;
+                }
                 if (running.size() == 1) yield Msg.f("Running %s", running.getFirst());
                 if (running.size() > 1) yield Msg.f("Waiting for %d tools", running.size());
                 if (s.status() == SessionStatus.STREAMING && "text".equals(s.streamingKind())) yield Msg.t("Writing");
@@ -736,9 +800,17 @@ public final class AgentWorkbench {
             };
             what = Blocks.clip(what, 80);
             String how = choice == null || choice.label() == null || choice.label().isEmpty() ? "" : "（" + choice.label() + "）";
-            String line = d.kind().approved() ? "✔ " + Msg.f("You approved: %s", what) + how : "✗ " + Msg.f("You denied: %s", what) + how;
-            if (r.toolUseId() != null) { decisions.put(r.toolUseId(), line); requestRefresh(); }
-            else note(line, null);
+            boolean sub = r.session() != null && !r.session().equals(root.id());
+            if (sub) {
+                // 子 agent 问的：那次调用的格子在子会话里，结果记在主对话里，写明是哪一趟
+                String who = roster.label(r.session());
+                String line = d.kind().approved() ? "✔ " + Msg.f("You approved (%s): %s", who, what) + how : "✗ " + Msg.f("You denied (%s): %s", who, what) + how;
+                note(line, null);
+            } else {
+                String line = d.kind().approved() ? "✔ " + Msg.f("You approved: %s", what) + how : "✗ " + Msg.f("You denied: %s", what) + how;
+                if (r.toolUseId() != null) { decisions.put(r.toolUseId(), line); requestRefresh(); }
+                else note(line, null);
+            }
         }
         if (d.kind() == ReviewDecision.Kind.ABORT && d.feedback() != null) {
             String fb = d.feedback();
@@ -862,14 +934,15 @@ public final class AgentWorkbench {
             }
             rows.add(List.of());
         }
-        List<SubRun> runs = root.subLog();
+        List<AgentRoster.Row> runs = roster.rows().stream().filter(r -> !r.main()).toList();
         if (!runs.isEmpty()) {
             rows.add(List.of(Seg.of(" " + Msg.t("Sub-agents"), "agent-side-title")));
-            for (SubRun r : runs) {
-                String sym = r.running() ? "◌" : r.ok() ? "⊛" : "✗";
-                rows.add(List.of(Seg.of(" " + sym + " ", r.running() ? "agent-side-warn" : r.ok() ? "agent-side-ok" : "agent-side-err"),
-                        Seg.of((r.who() == null ? "" : r.who() + " "), "agent-side-bold"), Seg.of(Blocks.clip(r.desc(), 40), "agent-side"),
-                        Seg.of(" · " + Msg.f("%d steps", r.allSteps().size()), "agent-side-dim")));
+            for (AgentRoster.Row r : runs) {
+                String[] g = AgentsOverview.glyph(r.state());
+                rows.add(List.of(Seg.of(" " + "  ".repeat(r.depth() - 1) + g[0] + " ", r.state() == AgentRoster.State.DONE ? "agent-side-ok"
+                                : r.state() == AgentRoster.State.FAILED ? "agent-side-err" : "agent-side-warn"),
+                        Seg.of(r.label() + " ", r.face()), Seg.of(Blocks.clip(r.desc(), 40), "agent-side"),
+                        Seg.of(" · " + Msg.f("%d steps", r.steps()), "agent-side-dim")));
             }
             rows.add(List.of());
         }
@@ -902,21 +975,27 @@ public final class AgentWorkbench {
 
     // ══ 子会话 ═══════════════════════════════════════════════════════════
 
-    SubRun findRun(String id) {
-        if (id == null) return null;
-        for (SubRun r : root.subLog()) if (id.equals(r.id())) return r;
-        return null;
+    /** 按 id 找一趟子 agent（主会话派的、子 agent 再派的都找）。 */
+    SubRun findRun(String id) { return roster.find(id); }
+
+    /** 子 agent 的带色称呼（审批面板写「谁问的」用）；不认识 ⇒ null。 */
+    List<Seg> agentTag(String sessionId) {
+        if (roster.find(sessionId) == null) return null;
+        return List.of(Seg.of(roster.label(sessionId), roster.face(sessionId)));
     }
 
-    private String childName(String sessionId) {
-        AgentSession c = root.child(sessionId);
-        return c == null ? sessionId : (c.agent() == null ? "" : c.agent() + " ") + (c.title() == null ? sessionId : c.title());
+    /** 子 agent 之间走的顺序：总览里的顺序（深度优先），不含主会话。 */
+    private List<String> runOrder() {
+        List<String> ids = new ArrayList<>();
+        for (AgentRoster.Row r : roster.rows()) if (!r.main()) ids.add(r.id());
+        return ids;
     }
 
     void enterRun(String runId) {
         SubRun run = findRun(runId);
         if (run == null) { ed.message(Msg.t("no such sub-agent run")); return; }
-        AgentSession child = root.child(runId);
+        if (overview.active()) closeOverview();
+        AgentSession child = roster.session(runId);
         if (viewing != root && viewing != child) viewing.removeListener(childListener);
         viewingRun = runId;
         if (child != null) {
@@ -944,13 +1023,11 @@ public final class AgentWorkbench {
 
     /** 兄弟之间走（d = ±1）。 */
     void siblingRun(int d) {
-        List<SubRun> runs = root.subLog();
+        List<String> runs = runOrder();
         if (runs.isEmpty()) { ed.message(Msg.t("no sub-agent runs in this conversation")); return; }
-        int i = -1;
-        for (int k = 0; k < runs.size(); k++) if (runs.get(k).id() != null && runs.get(k).id().equals(viewingRun)) i = k;
+        int i = runs.indexOf(viewingRun);
         if (i < 0) { enterLatestRun(); return; }
-        int j = Math.floorMod(i + d, runs.size());
-        enterRun(runs.get(j).id());
+        enterRun(runs.get(Math.floorMod(i + d, runs.size())));
     }
 
     /** 进一趟：光标在组头上就进那一趟，否则进最近（优先正在跑）的那趟。 */
@@ -985,6 +1062,8 @@ public final class AgentWorkbench {
         for (Message m : s.history()) for (Block.ToolResult r : m.toolResults()) fullResults.put(r.toolUseId(), Block.joinText(r.content()));
         approval.hide();
         question.hide();
+        if (overview.active()) closeOverview();
+        roster.reset();
         errorLine = null;
         escArmedAt = -1;
         turnStartedAt = -1;
@@ -1069,30 +1148,50 @@ public final class AgentWorkbench {
         }
     }
 
-    /** /agents：回主对话（在子 agent 里时）、这段对话里的各趟子 agent（RET 走进去看）、换主会话的 agent。 */
-    void pickAgents() {
+    /** /agents、C-c a：agent 总览（主会话 + 每一趟子 agent），占住记录区那块；再按一次 = 收起。 */
+    void openOverview() {
+        if (overview.active()) { closeOverview(); return; }
+        if (list.active()) list.close();
+        overview.open(viewingRun);
+        ed.showBuffer(tw, overview.buf);
+        tw.setFollowTail(false);
+        tw.setStart(0);
+        ed.selectWindow(tw);
+        overview.render();
+        startTicker();
+    }
+
+    void closeOverview() {
+        if (!overview.active()) return;
+        overview.close();
+        ed.showBuffer(tw, transcript);
+        focusInput();
+        toEnd();
+        requestRefresh();
+    }
+
+    /** 总览那块有多大（列、行）。 */
+    int[] overviewSize() {
+        int[] ts = ed.textSize(tw);
+        // 留一列：正好写满一行时显示层会把它当成要折的长行（行尾画续行记号）
+        return new int[]{Math.max(20, ts[0] - 1), Math.max(4, ed.windowHeight(tw))};
+    }
+
+    void overviewPoint(int pos) {
+        if (tw.buffer() != overview.buf) return;
+        tw.setStart(0);
+        tw.setPoint(pos);
+    }
+
+    /** 换主会话的 agent（总览里按 s）。 */
+    void pickAgentDef() {
         List<ListPanel.Item> items = new ArrayList<>();
-        if (inChild()) items.add(new ListPanel.Item(Msg.t("← back to the main conversation"), null, false, "main"));
-        List<SubRun> runs = root.subLog();
-        for (int i = 0; i < runs.size(); i++) {
-            SubRun r = runs.get(i);
-            if (r.id() == null) continue;
-            String who = r.who() == null ? "" : r.who() + " · ";
-            String state = r.running() ? Msg.t("running") : r.ok() ? Msg.t("done") : Msg.t("error");
-            items.add(new ListPanel.Item(Msg.f("View sub-agent: %s", who + Blocks.clip(r.desc(), 50)), Msg.f("%d steps", r.allSteps().size()) + " · " + state,
-                    r.id().equals(viewingRun), "run:" + r.id()));
-        }
         for (AgentDef d : rt.registry().visibleDefs()) {
             String desc = d.description() == null ? "" : Blocks.clip(d.description().lines().findFirst().orElse("").replace("**", "").replace("`", ""), 60);
             String pin = d.models() != null && !d.models().isEmpty() ? "  " + Msg.f("dispatch ⇢ %s", d.models().getFirst()) : "";
             items.add(new ListPanel.Item(Msg.f("Switch agent: %s", d.name()), desc + pin, d.name().equals(root.agent()), "def:" + d.name()));
         }
-        list.open(Msg.t("Agents"), inChild() ? Msg.t("You are viewing a sub-agent run.") : null, items, it -> {
-            String v = (String) it.value();
-            if (v.equals("main")) leaveChild();
-            else if (v.startsWith("run:")) enterRun(v.substring(4));
-            else selectAgent(v.substring(4));
-        }, null, null);
+        list.open(Msg.t("Switch the main agent"), null, items, it -> selectAgent(((String) it.value()).substring(4)), null, null);
     }
 
     void selectAgent(String name) {
@@ -1217,6 +1316,7 @@ public final class AgentWorkbench {
 
     /** 记录区往上翻了时下面还有几行（跟着尾巴 ⇒ 0）。 */
     int linesBelow() {
+        if (tw.buffer() != transcript) return 0;
         int len = transcript.length();
         if (tw.point() >= len) return 0;
         int below = transcript.text().lineOf(len) - transcript.text().lineOf(tw.start()) - ed.windowHeight(tw) + 1;
@@ -1234,7 +1334,16 @@ public final class AgentWorkbench {
         rows.add(below > 0 ? List.of(Seg.of("  ↓ " + Msg.f("%d more lines below · PgDn", below), "agent-dim")) : List.of());
         AgentSession s = viewing != null && viewing != root && viewing.busy() ? viewing : root;
         boolean any = false;
+        List<AgentRoster.Row> runs = roster.running();
         if (s.busy()) { rows.add(statusLine(s)); any = true; }
+        else if (!runs.isEmpty()) {
+            // 主会话闲着、后台还有子 agent 在跑
+            rows.add(List.of(Seg.of(ed.now() / 600 % 2 == 0 ? "• " : "◦ ", "agent-bullet-run"),
+                    Seg.of(Msg.f("%d sub-agents running in the background", runs.size()), "agent-title"),
+                    Seg.of("  C-c a " + Msg.t("overview"), "agent-dim")));
+            any = true;
+        }
+        if (!runs.isEmpty()) rows.addAll(feedRows(runs, width(w)));
         List<String> q = root.queue();
         if (!q.isEmpty()) {
             if (any) rows.add(List.of());
@@ -1250,23 +1359,53 @@ public final class AgentWorkbench {
         }
         if (inChild()) {
             if (any) rows.add(List.of());
-            List<SubRun> runs = root.subLog();
-            int i = 0;
-            for (int k = 0; k < runs.size(); k++) if (viewingRun.equals(runs.get(k).id())) i = k + 1;
+            List<String> order = runOrder();
+            int i = order.indexOf(viewingRun) + 1;
             SubRun r = findRun(viewingRun);
-            List<Seg> h = new ArrayList<>(List.of(Seg.of("• ", "agent-magenta"), Seg.of(Msg.f("Viewing sub-agent %d/%d", i, runs.size()), "agent-title")));
+            List<Seg> h = new ArrayList<>(List.of(Seg.of("• ", roster.face(viewingRun)), Seg.of(Msg.f("Viewing sub-agent %d/%d", i, order.size()), "agent-title"),
+                    Seg.of(" · ", "agent-dim"), Seg.of(roster.label(viewingRun), roster.face(viewingRun))));
             StringBuilder sb = new StringBuilder();
-            if (r != null && r.who() != null) sb.append(" · ").append(r.who());
             String model = viewing != root && viewing.model() != null ? viewing.model() : r != null ? r.model() : null;
             if (model != null) sb.append(" · ").append(shortModel(model));
             if (r != null && !r.desc().isEmpty()) sb.append(" · ").append(Blocks.clip(r.desc(), 40));
             h.add(Seg.of(sb.toString(), "agent-dim"));
-            h.add(Seg.of("   ← → " + Msg.t("siblings") + " · /agents " + Msg.t("back to main"), "agent-dim"));
-            rows.add(h);
+            h.add(Seg.of("   ← → " + Msg.t("siblings") + " · C-c a " + Msg.t("overview"), "agent-dim"));
+            rows.add(AgentsOverview.clipRow(h, width(w)));
             any = true;
         }
         if (any) rows.add(List.of());
         return rows;
+    }
+
+    /** 状态区里一行一个在跑的子 agent 最多摆几个（再多写「还有 N 个」）。 */
+    static final int FEED_MAX = 3;
+
+    /**
+     * 子 agent 的活动行（Codex agent status feed 的精简版）：状态行下面一个在跑的子 agent 一行 ——
+     * {@code └ ● junior #1 (4s · 2 步) 运行 search-text pattern=… — 找出所有调用 greet 的地方}；等你审批的写成黄色的「等你审批：…」。
+     */
+    List<List<Seg>> feedRows(List<AgentRoster.Row> runs, int width) {
+        List<List<Seg>> out = new ArrayList<>();
+        int max = ed.rows() < 30 ? 2 : FEED_MAX;
+        // 前台的（主会话在等它们）排前面，后台的排后面并标出来 —— 否则状态行说"在等 2 个"、下面却列了 3 行
+        runs = new ArrayList<>(runs);
+        runs.sort(java.util.Comparator.comparing(AgentRoster.Row::background));
+        for (int k = 0; k < runs.size() && k < max; k++) {
+            AgentRoster.Row r = runs.get(k);
+            List<Seg> l = new ArrayList<>();
+            l.add(Seg.of(k == 0 ? "  └ " : "    ", "agent-tree"));
+            String[] g = AgentsOverview.glyph(r.state());
+            l.add(Seg.of(g[0] + " ", g[1]));
+            l.add(Seg.of(r.label(), r.face()));
+            if (r.background()) l.add(Seg.of(" [" + Msg.t("background") + "]", "agent-dim"));
+            l.add(Seg.of(" (" + elapsed(r.elapsedMs() / 1000) + " · " + Msg.f("%d steps", r.steps()) + ") ", "agent-dim"));
+            if (r.attention() != null) l.add(Seg.of(r.attention(), "agent-warn"));
+            else if (r.activity() != null) l.add(Seg.of(r.activity(), "agent-text"));
+            if (r.desc() != null && !r.desc().isEmpty()) l.add(Seg.of(" — " + r.desc().replace('\n', ' '), "agent-dim"));
+            out.add(AgentsOverview.clipRow(l, width - 1));
+        }
+        if (runs.size() > max) out.add(List.of(Seg.of("    " + Msg.f("… %d more", runs.size() - max) + " · C-c a " + Msg.t("overview"), "agent-dim")));
+        return out;
     }
 
     /** 输入框竖条（› 那格）的样子：跑着时压暗。 */
@@ -1276,15 +1415,50 @@ public final class AgentWorkbench {
     private List<Seg> hintSegs(ModeLine.Ctx c) {
         String[][] ks;
         if (escArmed()) return List.of(Seg.of("  "), Seg.of("Esc", "agent-footer-key"), Seg.of(" " + Msg.t("again within 5 seconds to stop this turn"), "agent-warn"));
-        if (ed.selectedWindow() == tw) ks = new String[][]{{"TAB", Msg.t("fold")}, {"n/p", Msg.t("blocks")}, {"⏎", Msg.t("enter / open")},
+        if (overview.active()) ks = new String[][]{{"↑↓", Msg.t("select")}, {"⏎", Msg.t("open")}, {"Tab", Msg.t("filter")}, {"s", Msg.t("switch main agent")},
+                {"Esc", Msg.t("back")}};
+        else if (ed.selectedWindow() == tw) ks = new String[][]{{"TAB", Msg.t("fold")}, {"n/p", Msg.t("blocks")}, {"⏎", Msg.t("enter / open")},
                 {"M-w", Msg.t("copy")}, {"C-s", Msg.t("search")}, {"q", Msg.t("back to input")}};
-        else if (inChild()) ks = new String[][]{{"← →", Msg.t("siblings")}, {"/agents", Msg.t("back to main")}, {"⏎", Msg.t("sends to main")}};
+        else if (inChild()) ks = new String[][]{{"← →", Msg.t("siblings")}, {"⌃C a", Msg.t("agents")}, {"⏎", Msg.t("sends to main")}};
+        else if (!roster.running().isEmpty()) ks = new String[][]{{"⏎", root.busy() ? Msg.t("queue") : Msg.t("send")}, {"⌃C a", Msg.t("agents")},
+                {"Esc Esc", Msg.t("interrupt")}, {"PgUp/PgDn", Msg.t("scroll")}};
         else if (root.busy()) ks = new String[][]{{"⏎", Msg.t("queue")}, {"/steer", Msg.t("interrupt & send")}, {"Esc Esc", Msg.t("interrupt")},
                 {"PgUp/PgDn", Msg.t("scroll")}};
         else ks = new String[][]{{"⏎", Msg.t("send")}, {"⌃J", Msg.t("newline")}, {"/", Msg.t("commands")}, {"@", Msg.t("files")},
                 {"↑", Msg.t("history")}, {"⌃X o", Msg.t("transcript")}};
         int room = width(c.window()) - Seg.width(usageSegs(c)) - 4;
-        return keyHints(room, ks);
+        return footer(room, ks);
+    }
+
+    /** 闪现在底栏多久（毫秒）。 */
+    static final long FLASH_MS = 4000;
+    private String flashText;
+    private Timers.Timer flashTimer;
+
+    /**
+     * echo area 里的话 ⇒ 底栏的闪现（Codex footer flash：整条提示行换成这句话，几秒后自己换回提示）；读键提问 / minibuffer 时
+     * 不算（那时 echo area 整行由编辑器画）。没话 ⇒ null。
+     */
+    String flash() {
+        String m = ed.currentMessage();
+        if (m == null || m.isEmpty() || ed.awaitingKey() || ed.minibufferActive()) { if (m == null) flashText = null; return null; }
+        if (!m.equals(flashText)) {
+            flashText = m;
+            if (flashTimer != null) flashTimer.cancel();
+            flashTimer = ed.runAfter(FLASH_MS, () -> {
+                if (m.equals(ed.currentMessage())) ed.messageRaw(null);
+                flashText = null;
+            });
+        }
+        int nl = m.indexOf('\n');
+        return nl < 0 ? m : m.substring(0, nl);
+    }
+
+    /** 底栏左边：有闪现就整条换成它（不和键位提示挤在一行里），否则是键位提示。面板们也走这里。 */
+    List<Seg> footer(int width, String[][] ks) {
+        String f = flash();
+        if (f != null) return List.of(Seg.of("  "), Seg.of(Width.ellipsize(f, Math.max(8, width - 2)), "echo-message"));
+        return keyHints(width, ks);
     }
 
     /** 底栏最后一行右边：模型 · 思考档 · agent（非默认）· 上下文剩余 · 用量（窄了从后往前丢）。 */
@@ -1296,7 +1470,8 @@ public final class AgentWorkbench {
         out.add(Seg.of(m == null ? Msg.t("no model") : shortModel(m), m == null ? "agent-warn" : "agent-footer"));
         if (s.thinking() != null) out.add(Seg.of(" " + s.thinking(), "agent-footer"));
         String agent = root.agent();
-        if (agent != null && !agent.equals("main")) out.add(Seg.of(" · " + agent, "agent-magenta"));
+        if (inChild() && viewingRun != null) out.add(0, Seg.of(roster.label(viewingRun) + " · ", roster.face(viewingRun)));
+        else if (agent != null && !agent.equals("main")) out.add(Seg.of(" · " + agent, "agent-magenta"));
         List<String> att = root.attachments();
         if (!att.isEmpty()) out.add(Seg.of(" · ⧉ " + (att.size() == 1 ? att.getFirst() : Msg.f("%d attachments", att.size())), "link"));
         int room = Math.max(0, width(c.window()) / 2 - Seg.width(out) - 3);
@@ -1356,7 +1531,8 @@ public final class AgentWorkbench {
         cmd("agent-steer-now", "插话（/steer）：停掉这一轮，把输入框里的话（连同排着的）立刻发出去。", e -> steerNow());
         cmd("agent-select-model", "选模型（C-c m、/model）。", e -> pickModel());
         cmd("agent-select-thinking", "选思考档位（C-c k、/thinking）。", e -> pickThinking());
-        cmd("agent-select-agent", "agent 选择器（/agents）：换 agent、看子 agent、回主对话。", e -> pickAgents());
+        cmd("agent-select-agent", "换主会话的 agent（选择器）。", e -> pickAgentDef());
+        cmd("agent-overview", "agent 总览（C-c a、/agents）：主会话和每一趟子 agent，RET 走进去看。", e -> openOverview());
         cmd("agent-sessions", "对话列表（C-c l、/sessions；第一项是开一段新的）。", e -> pickSession());
         cmd("agent-new-session", "开一段新对话（/new）。", e -> newConversation());
         cmd("agent-permissions", "选权限预设（C-c p、/permissions；审批 × 沙盒）。", e -> pickPreset());
@@ -1436,12 +1612,13 @@ public final class AgentWorkbench {
 
     /**
      * 键（精简过，Codex 那样大半事情交给 / 命令）：全局只留 {@code C-x C-c} 退出、{@code C-x o} 换焦点、{@code C-c C-c} 停、
-     * {@code C-c m / k / p / l} 四个选择器；其余前缀键一概不要。
+     * {@code C-c m / k / p / l} 四个选择器、{@code C-c a} agent 总览；其余前缀键一概不要。
      */
     private void installKeys() {
         Keymap g = ed.globalMap();
         g.define("C-x o", "agent-toggle-focus");
-        String[][] leader = {{"m", "agent-select-model"}, {"k", "agent-select-thinking"}, {"p", "agent-permissions"}, {"l", "agent-sessions"}};
+        String[][] leader = {{"m", "agent-select-model"}, {"k", "agent-select-thinking"}, {"p", "agent-permissions"}, {"l", "agent-sessions"},
+                {"a", "agent-overview"}};
         for (String[] b : leader) g.define(LEADER + " " + b[0], b[1]);
         g.prefixName(LEADER, "agent");
         g.define("C-c C-c", "agent-interrupt");

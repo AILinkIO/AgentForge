@@ -24,7 +24,7 @@ public final class Options {
         values.put("completion-auto", true);          // 输入框里打了触发字符（/ @ …）或前缀够长就自动弹补全
         values.put("completion-auto-delay-ms", 150);
         values.put("completion-auto-prefix", 3);
-        values.put("echo-area", "line");              // "line" = 最后一行留给 echo area（Emacs）；"overlay" = 有话要说时才叠在最后一行上
+        values.put("echo-area", "line");              // "line" = 最后一行留给 echo area（Emacs）；"overlay" = 有话要说时才叠在最后一行上；"host" = 同 overlay，但普通消息交给宿主自己摆
         values.put("completion-display", "box");      // "box" = 光标旁的浮框（corfu）；"above-window" = 贴在当前窗口正上方的整宽列表（Codex 的 / 菜单）
         values.put("theme", null);                    // null = 默认主题
     }

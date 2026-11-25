@@ -167,6 +167,24 @@ class DisplayTest {
     }
 
     @Test
+    void echoAreaHostLeavesPlainMessagesToTheHostButDrawsKeyPrompts() {
+        Editor ed = new Editor(30, 6);
+        ed.options().set("echo-area", "host");
+        Buffer b = ed.currentBuffer();
+        b.setModeLine(new ModeLine().add("hint", 10, false, c -> java.util.List.of(Seg.of("hint line"))));
+        assertEquals("hint line", row(ed.render(), 5));
+        ed.message("saved");
+        assertEquals("hint line", row(ed.render(), 5), "普通消息不盖提示行（宿主自己摆）");
+        assertFalse(ed.awaitingKey());
+        ed.yOrN("Quit?", y -> { });
+        assertTrue(ed.awaitingKey());
+        assertTrue(row(ed.render(), 5).startsWith(" Quit?"), "读键提问照常整行盖上：" + row(ed.render(), 5));
+        ed.feed("n");
+        assertFalse(ed.awaitingKey());
+        assertEquals("hint line", row(ed.render(), 5));
+    }
+
+    @Test
     void topRowsPlaceholderFirstLinePrefixAndEchoOverlay() {
         Editor ed = new Editor(30, 8);
         ed.options().set("echo-area", "overlay");

@@ -405,20 +405,23 @@ class WorkbenchTest {
             Files.writeString(h.root.resolve("a.txt"), "hello\n");
             h.type("hello 在哪").keys("RET").idle();
             String s = h.screen();
-            assertTrue(s.contains("• 子 agent [deep] 找 hello"), s);
+            assertTrue(s.contains("• 子 agent deep #1 找 hello"), s);
             assertTrue(s.contains("1 步"), s);
             h.type("/agents").keys("RET");
-            assertTrue(h.wb.listPanel().labels().getFirst().contains("看子 agent：deep · 找 hello"), h.wb.listPanel().labels().toString());
-            h.keys("1");
+            assertTrue(h.wb.overview.active());
+            String ov = h.screen();
+            assertTrue(ov.contains("主会话") && ov.contains("deep #1") && ov.contains("找 hello"), ov);
+            h.keys("<down>").keys("RET");
+            assertFalse(h.wb.overview.active());
             assertNotSame(h.wb.session(), h.wb.viewing(), "走进了子会话");
             String child = h.screen();
-            assertTrue(child.contains("正在看子 agent 1/1"), child);
-            assertTrue(child.contains("/agents 回主对话"), child);
+            assertTrue(child.contains("正在看子 agent 1/1 · deep #1"), child);
             assertTrue(child.contains("在 a.txt 里找到了 hello"), child);
             assertTrue(child.contains("读 a.txt"), child);
-            h.type("/agents").keys("RET");
-            assertTrue(h.wb.listPanel().labels().getFirst().contains("回主对话"), h.wb.listPanel().labels().toString());
-            h.keys("1");
+            h.keys("C-c a");
+            assertTrue(h.wb.overview.active());
+            assertEquals("t1", h.wb.overview.selected(), "总览开着时选中正在看的那趟");
+            h.keys("<up>").keys("RET");
             assertSame(h.wb.session(), h.wb.viewing());
             assertTrue(h.screen().contains("子 agent 说在 a.txt"));
         }
@@ -477,6 +480,9 @@ class WorkbenchTest {
             assertEquals("read-only", h.rt.permissionSettings().sandbox().wire());
             assertNull(h.ed.globalMap().lookup(io.ailink.agentforge.tui.Keymap.kbd("C-c d")), "C-c d 已去掉");
             h.type("/agents").keys("RET");
+            assertTrue(h.wb.overview.active(), "/agents 开总览");
+            h.keys("s");
+            assertFalse(h.wb.overview.active());
             assertTrue(h.wb.listPanel().labels().contains("换 agent：deep"), h.wb.listPanel().labels().toString());
             h.type("agent：deep").keys("RET");
             assertEquals("deep", h.wb.session().agent());
@@ -506,7 +512,7 @@ class WorkbenchTest {
     void keyTableIsTrimmed() throws Exception {
         try (Harness h = new Harness(tmp, new FakeModel())) {
             var g = h.ed.globalMap();
-            for (String k : List.of("C-x C-c", "C-x o", "C-c C-c", "C-c m", "C-c k", "C-c p", "C-c l"))
+            for (String k : List.of("C-x C-c", "C-x o", "C-c C-c", "C-c m", "C-c k", "C-c p", "C-c l", "C-c a"))
                 assertNotNull(g.lookup(io.ailink.agentforge.tui.Keymap.kbd(k)), "留着：" + k);
             for (String k : List.of("C-c d", "C-c N", "C-c o", "C-c e", "C-c s", "C-c y", "C-c n", "C-c i", "C-c c", "C-c t", "C-c /", "C-c ?",
                     "C-c <up>", "C-c <down>", "C-c <left>", "C-c <right>", "C-c T", "C-x 2", "C-x 3", "C-x 0", "C-x 1", "C-x u", "C-x h",

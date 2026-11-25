@@ -61,7 +61,7 @@ final class ListPanel {
             return rows;
         });
         buf.setFooter(w -> rows());
-        buf.setModeLine(new ModeLine().add("hint", 10, false, c -> AgentWorkbench.keyHints(wb.panelWidth(), new String[][]{
+        buf.setModeLine(new ModeLine().add("hint", 10, false, c -> wb.footer(wb.panelWidth(), new String[][]{
                 {"↑↓", Msg.t("select")}, {"⏎", Msg.t("confirm")}, {"1-9", Msg.t("pick")}, {Msg.t("type"), Msg.t("filter")}, {"Esc", Msg.t("back")}})));
         buf.addChangeListener((b, a, oe, ne) -> { if (open) { refilter(); sel = 0; top = 0; wb.resizeInput(); } });
         ed.defineInternalCommand("agent-list-next", "选择器：下一项。", e -> move(1));

@@ -34,7 +34,7 @@ final class SlashCommands {
             new Cmd("/help", null, "this help"),
             new Cmd("/model", "[ref]", "show / switch the model (no argument: picker)"),
             new Cmd("/models", null, "list the available models"),
-            new Cmd("/agents", "[name]", "switch agent / view sub-agent runs / back to main (no argument: picker)"),
+            new Cmd("/agents", "[name]", "agents overview: main + every sub-agent run (with a name: switch the main agent)"),
             new Cmd("/new", null, "start a new conversation"),
             new Cmd("/sessions", null, "recent conversations (picker)"),
             new Cmd("/open", "<id>", "open a stored conversation and continue it"),
@@ -104,7 +104,7 @@ final class SlashCommands {
                     say(sb.toString().stripTrailing());
                 }
                 case "/agents" -> {
-                    if (arg.isEmpty()) wb.pickAgents(); else wb.selectAgent(arg);
+                    if (arg.isEmpty()) wb.openOverview(); else wb.selectAgent(arg);
                 }
                 case "/steer" -> {
                     if (!arg.isEmpty()) wb.prompt.setContents(arg);
@@ -238,6 +238,7 @@ final class SlashCommands {
             {"C-c C-c", "stop the running turn (idle: how to quit)"},
             {"C-c m / k / p", "pick model / thinking level / permission preset"},
             {"C-c l", "conversations (first item = new conversation)"},
+            {"C-c a", "agents overview (main + every sub-agent; RET opens one)"},
             {"C-x o", "transcript ↔ input"},
             {"C-x C-c", "quit"},
             {"PgUp / PgDn", "scroll the transcript"},

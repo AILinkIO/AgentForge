@@ -10,6 +10,7 @@ import io.ailink.agentforge.tui.MinibufferRequest;
 import io.ailink.agentforge.tui.Mode;
 import io.ailink.agentforge.tui.ModeLine;
 import io.ailink.agentforge.tui.Seg;
+import io.ailink.agentforge.tui.text.Width;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -30,6 +31,10 @@ final class ApprovalPanel {
     final Buffer buf;
     private ApprovalRequest req;
     private int sel;
+    /** 矮屏上把收起的详情展开了（? 键）。 */
+    private boolean expanded;
+    /** 屏幕矮于这么多行时面板收紧（Codex 的 approval overlay：标题一行、命令一行、选项一项一行，详情按 ? 展开）。 */
+    static final int COMPACT_BELOW_ROWS = 30;
 
     ApprovalPanel(AgentWorkbench wb, Editor ed) {
         this.wb = wb;
@@ -40,10 +45,12 @@ final class ApprovalPanel {
         buf.put("word-wrap", true);
         buf.put("wrap-prefix", "     ");
         buf.put("mode-line-face", "default");
-        buf.setTopRows(w -> req == null ? List.of() : details(req, wb.panelWidth(), wb.rootId()));
-        buf.setFooter(w -> List.of(List.of()));
-        buf.setModeLine(new ModeLine().add("hint", 10, false, c -> AgentWorkbench.keyHints(wb.panelWidth(), new String[][]{
-                {"⏎", Msg.t("confirm")}, {"y/p/a/d/b/n", Msg.t("choose")}, {"↑↓", Msg.t("select")}, {"Esc", Msg.t("deny")},
+        buf.setTopRows(w -> req == null ? List.of() : details(req, wb.panelWidth(), wb.rootId(), wb::agentTag, compact()));
+        buf.setFooter(w -> compact() ? List.of() : List.of(List.of()));
+        buf.setModeLine(new ModeLine().add("hint", 10, false, c -> wb.footer(wb.panelWidth(), compact() || expanded ? new String[][]{
+                {"⏎", Msg.t("confirm")}, {keys(), Msg.t("choose")}, {"?", expanded ? Msg.t("less") : Msg.t("details")}, {"Esc", Msg.t("deny")},
+                {"⌃C⌃C", Msg.t("stop the turn")}} : new String[][]{
+                {"⏎", Msg.t("confirm")}, {keys(), Msg.t("choose")}, {"↑↓", Msg.t("select")}, {"Esc", Msg.t("deny")},
                 {"⌃C⌃C", Msg.t("stop the turn")}})));
         ed.defineInternalCommand("agent-approval-key", "审批面板：按请求上的快捷键选。", e -> {
             String k = e.thisKey();
@@ -55,6 +62,10 @@ final class ApprovalPanel {
             }
             if (c == null) { e.message("Not an option here: %s", k); return; }
             choose(e, c);
+        });
+        ed.defineInternalCommand("agent-approval-details", "审批面板 ?：矮屏上收起的详情（完整命令、理由、目录）展开 / 收起。", e -> {
+            expanded = !expanded;
+            if (req != null) { render(); wb.resizeInput(); }
         });
         ed.defineInternalCommand("agent-approval-next", "审批面板：下一项。", e -> move(1));
         ed.defineInternalCommand("agent-approval-previous", "审批面板：上一项。", e -> move(-1));
@@ -72,6 +83,7 @@ final class ApprovalPanel {
         MODE.keymap().define("C-n", "agent-approval-next").define("<down>", "agent-approval-next").define("TAB", "agent-approval-next")
                 .define("C-p", "agent-approval-previous").define("<up>", "agent-approval-previous").define("<backtab>", "agent-approval-previous")
                 .define("RET", "agent-approval-confirm").define("ESC", "agent-approval-deny").define("M-ESC", "agent-stop")
+                .define("?", "agent-approval-details")
                 .define("C-c C-c", "agent-stop");
     }
 
@@ -79,11 +91,22 @@ final class ApprovalPanel {
 
     boolean active() { return req != null; }
 
+    /** 收紧着没有：屏幕矮且没按 ? 展开。 */
+    boolean compact() { return !expanded && wb.ed.rows() < COMPACT_BELOW_ROWS; }
+
+    /** 这道审批的快捷键（y/p/a/d/b/n 里请求上真有的那几个）。 */
+    private String keys() {
+        if (req == null) return "y/n";
+        List<String> ks = new ArrayList<>();
+        for (ApprovalChoice c : req.choices()) if (c.key() != null && !c.key().isEmpty()) ks.add(c.key());
+        return ks.isEmpty() ? "1-9" : String.join("/", ks);
+    }
+
     void show(ApprovalRequest r) {
         if (r == null) { hide(); return; }
         boolean fresh = req == null || !req.id().equals(r.id());
         req = r;
-        if (fresh) sel = 0;
+        if (fresh) { sel = 0; expanded = false; }
         render();
         wb.showPanel(buf, 0);
     }
@@ -105,13 +128,32 @@ final class ApprovalPanel {
      * 选项上面那几行：空行、粗体问句（子 agent 问的写上是谁）、空行、理由 / 沙盒拦下的原因、命令（{@code $ …}，长的折行）/ 目录 /
      * 文件 / 主机 / 工具、空行。
      */
-    static List<List<Seg>> details(ApprovalRequest r, int width, String rootId) {
+    static List<List<Seg>> details(ApprovalRequest r, int width, String rootId) { return details(r, width, rootId, null, false); }
+
+    /**
+     * who：子 agent 的会话 id ⇒ 它的带色称呼（null = 只写 id）。compact：矮屏收紧 —— 不垫空行，理由 / 命令 / 文件各收成一行
+     * （截断处写「+N 行 · ? 详情」），不写目录；选项照样一项一行，一个都不少。
+     */
+    static List<List<Seg>> details(ApprovalRequest r, int width, String rootId, java.util.function.Function<String, List<Seg>> who, boolean compact) {
         List<List<Seg>> rows = new ArrayList<>();
         int w = Math.max(20, width - 4);
-        rows.add(List.of());
+        if (!compact) rows.add(List.of());
         List<Seg> head = new ArrayList<>(List.of(Seg.of("  "), Seg.of(Blocks.approvalHead(r), "agent-title")));
-        if (r.session() != null && rootId != null && !r.session().equals(rootId)) head.add(Seg.of("  " + Msg.f("(asked by sub-agent %s)", r.session()), "agent-dim"));
-        rows.add(head);
+        if (r.session() != null && rootId != null && !r.session().equals(rootId)) {
+            List<Seg> tag = who == null ? null : who.apply(r.session());
+            if (tag == null) head.add(Seg.of("  " + Msg.f("(asked by sub-agent %s)", r.session()), "agent-dim"));
+            else {
+                head.add(Seg.of("  ← ", "agent-dim"));
+                head.addAll(tag);
+                head.add(Seg.of(" " + Msg.t("asks"), "agent-dim"));
+            }
+        }
+        rows.add(AgentsOverview.clipRow(head, width));
+        if (compact) {
+            rows.addAll(compactBody(r, w));
+            rows.add(List.of());
+            return rows;
+        }
         List<List<Seg>> body = new ArrayList<>();
         if (r.reason() != null && !r.reason().isBlank()) {
             List<String> ls = Blocks.wrap(Msg.f("Reason: %s", r.reason()), w);
@@ -154,6 +196,51 @@ final class ApprovalPanel {
         rows.add(List.of());
         return rows;
     }
+
+    /** 收紧时问句下面那一两行：理由一行、命令 / 文件 / 主机 / 工具一行（多了写还有几行，? 看全）。 */
+    private static List<List<Seg>> compactBody(ApprovalRequest r, int w) {
+        List<List<Seg>> out = new ArrayList<>();
+        String more = " · ? " + Msg.t("details");
+        if (r.retryReason() != null) out.add(List.of(Seg.of("  "), Seg.of(Width.ellipsize(oneLine(r.retryReason()), w), "agent-warn")));
+        else if (r.reason() != null && !r.reason().isBlank())
+            out.add(List.of(Seg.of("  "), Seg.of(Width.ellipsize(Msg.f("Reason: %s", oneLine(r.reason())), w), "agent-reasoning")));
+        String what = null, lead = "  ";
+        String face = null;
+        if (r.command() != null && r.title() != null) { what = r.title(); lead = "  $ "; face = "agent-title"; }
+        else if (r.kind() == ApprovalRequest.Kind.PATCH) {
+            Preview.Result pv = r.preview();
+            String files = null;
+            if (pv != null && pv.text() != null) {
+                List<String> ps = Blocks.fromPreview(pv.text(), NO_CTX).files().stream().map(Blocks.FileDiff::path).toList();
+                if (!ps.isEmpty()) files = String.join(", ", ps);
+            }
+            what = Msg.f("Files: %s", files != null ? files : r.title() == null ? "" : r.title());
+            face = "agent-dim";
+        } else if (r.kind() == ApprovalRequest.Kind.NETWORK && r.host() != null) { what = Msg.f("Host: %s", r.host()); face = "agent-dim"; }
+        else if (r.title() != null) what = (r.toolName() != null && r.kind() == ApprovalRequest.Kind.TOOL ? r.toolName() + " " : "") + r.title();
+        if (what != null) {
+            List<String> ls = Blocks.lines(what.strip());
+            String first = ls.isEmpty() ? "" : ls.getFirst();
+            String tail = ls.size() > 1 ? " " + Msg.f("(+%d lines)", ls.size() - 1).strip() + more : "";
+            int room = w - Width.stringWidth(lead) + 2 - Width.stringWidth(tail);
+            boolean cut = Width.stringWidth(first) > room;
+            if (cut && tail.isEmpty()) { tail = more; room = w - Width.stringWidth(lead) + 2 - Width.stringWidth(tail); }
+            List<Seg> l = new ArrayList<>(List.of(Seg.of(lead, lead.contains("$") ? "agent-magenta" : null), Seg.of(Width.ellipsize(first, Math.max(8, room)), face)));
+            if (!tail.isEmpty()) l.add(Seg.of(tail, "agent-dim"));
+            out.add(l);
+        }
+        return out;
+    }
+
+    private static String oneLine(String s) { return s.strip().replace('\n', ' '); }
+
+    private static final Blocks.Ctx NO_CTX = new Blocks.Ctx() {
+        @Override public String fullResult(String id) { return null; }
+        @Override public io.ailink.agentforge.agent.transcript.SubRun subRun(String id) { return null; }
+        @Override public List<io.ailink.agentforge.agent.session.GalleryImage> images(String o) { return List.of(); }
+        @Override public void enterChild(Editor ed, String id) { }
+        @Override public void openImage(Editor ed, io.ailink.agentforge.agent.session.GalleryImage g) { }
+    };
 
     private void render() {
         buf.clear();

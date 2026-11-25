@@ -339,6 +339,9 @@ public final class Themes {
         m.put("completion-list-selected", Face.of(k.base, io.ailink.agentforge.tui.term.Colors.tint(k.bg, k.accent, 0.22, tc)).withBold(true));
         m.put("completion-list-detail", Face.fg(k.dim));
         m.put("echo-message", Face.fg(k.accent).withBold(true));
+        // 每一趟子 agent 的颜色（Codex thread_color：从主题的强调色里取；按序号轮换，相邻两趟不同色）
+        int[] thread = {k.accent, k.warn, k.type, k.head2, k.ok, k.func};
+        for (int i = 0; i < thread.length; i++) m.put("agent-thread-" + i, Face.fg(thread[i]).withBold(true));
     }
 
     private static Face rgb(int r, int g, int b) { return Face.fg(r << 16 | g << 8 | b); }

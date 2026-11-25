@@ -40,6 +40,9 @@ public final class SubRun {
 
     public Long ms() { return ms; }
 
+    /** 开始的时刻（epoch 毫秒）：跑着时 UI 拿它算已经跑了多久。 */
+    public long startedAt() { return start; }
+
     public boolean background() { return background; }
 
     public void background(boolean v) { this.background = v; }

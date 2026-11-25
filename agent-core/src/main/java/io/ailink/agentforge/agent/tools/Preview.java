@@ -28,8 +28,8 @@ public final class Preview {
     public static Result toolChangePreview(Workspace ws, String name, ObjectNode input) {
         try {
             return switch (name) {
-                case "write-file" -> diff(writePreview(ws, input));
-                case "edit-file" -> diff(editPreview(ws, input));
+                case "write-file" -> diff(writePreview(ws, input, true));
+                case "edit-file" -> diff(editPreview(ws, input, true));
                 case "apply-patch" -> {
                     String t = str(input, "patchText");
                     yield t == null ? null : diff(PatchTool.preview(ws, t));
@@ -51,6 +51,26 @@ public final class Preview {
 
     private static Result diff(String s) { return s == null ? null : new Result(Kind.DIFF, s); }
 
+    /**
+     * 改文件的调用（write-file / edit-file / apply-patch）<b>动手之前</b>的改动 diff（格式同审批预览，不跑语法检查）：
+     * 没过审批的调用落地后也要画真 diff、真行号，就得趁文件还没改时把 before 记下来。别的工具 / 算不出 ⇒ null；永不抛。
+     */
+    public static String changeDiff(Workspace ws, String name, ObjectNode input) {
+        try {
+            return switch (name) {
+                case "write-file" -> writePreview(ws, input, false);
+                case "edit-file" -> editPreview(ws, input, false);
+                case "apply-patch" -> {
+                    String t = str(input, "patchText");
+                    yield t == null ? null : PatchTool.preview(ws, t);
+                }
+                default -> null;
+            };
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
     private static String str(ObjectNode in, String k) {
         if (in == null) return null;
         JsonNode n = in.get(k);
@@ -62,22 +82,22 @@ public final class Preview {
     }
 
     /** 标题一行 + diff；没有变化要说出来；语法那句放在 diff 之后（先看改了什么，再看后果）。 */
-    private static String unified(Workspace ws, String title, String path, String before, String after) {
+    private static String unified(Workspace ws, String title, String path, String before, String after, boolean check) {
         String d = Diff.unified(before, after, "现在", "批准之后", 3);
-        String note = Check.previewNote(ws, path, before, after);
+        String note = check ? Check.previewNote(ws, path, before, after) : null;
         String body = d.isEmpty() ? title + "\n（这次调用不会改变文件内容）" : title + "\n" + d;
         return note != null ? body + "\n" + note : body;
     }
 
-    private static String writePreview(Workspace ws, ObjectNode in) {
+    private static String writePreview(Workspace ws, ObjectNode in, boolean check) {
         String path = str(in, "path"), content = str(in, "content");
         if (path == null || content == null) return null;
         String full = Limit.resolveInRoot(ws, path);
         boolean exists = Vfs.exists(ws, full);
-        return unified(ws, "write-file " + (exists ? "覆盖" : "新建") + " " + full, path, current(ws, full), content);
+        return unified(ws, "write-file " + (exists ? "覆盖" : "新建") + " " + full, path, current(ws, full), content, check);
     }
 
-    private static String editPreview(Workspace ws, ObjectNode in) {
+    private static String editPreview(Workspace ws, ObjectNode in, boolean check) {
         String path = str(in, "path"), old = str(in, "old");
         String nu = in.has("new") ? str(in, "new") : "";
         boolean all = in.has("all") && in.get("all").asBoolean();
@@ -89,7 +109,7 @@ public final class Preview {
         String before = ft.text();
         String after = EditTool.editApply(before, eol(ft, old), eol(ft, nu), all);
         if (after == null) return "edit-file " + path + "\n（找不到要替换的原文，这次调用会失败）";
-        return unified(ws, "edit-file " + path, path, before, after);
+        return unified(ws, "edit-file " + path, path, before, after, check);
     }
 
     private static String eol(FileText ft, String s) {

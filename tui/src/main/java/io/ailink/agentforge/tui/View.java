@@ -279,7 +279,9 @@ final class View {
             else w.setStart(vstart(w, step(w, pv, -(h / 2))));
         } else {
             int d = distance(w, sv, pv, 2 * h);
-            if (d < h) w.setStart(vstart(w, sv));
+            // 跟着末尾的窗口：末尾总贴着窗口底（窗口变高了也往上多露几行，不在底下留空白）
+            if (w.followTail && w.point() >= w.buffer.length()) w.setStart(vstart(w, step(w, pv, -(h - 1))));
+            else if (d < h) w.setStart(vstart(w, sv));
             // 跟随末尾的窗口一次来了一大段：末尾贴窗口底，不居中（不留半屏空白）
             else if (w.followTail && w.point() >= w.buffer.length()) w.setStart(vstart(w, step(w, pv, -(h - 1))));
             else if (d - h < Math.max(1, h / 3)) w.setStart(vstart(w, step(w, pv, -(h - 1))));

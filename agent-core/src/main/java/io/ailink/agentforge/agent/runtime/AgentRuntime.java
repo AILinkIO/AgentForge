@@ -648,6 +648,8 @@ public final class AgentRuntime implements AutoCloseable {
                     .agent(def.name())
                     .config(cfg)
                     .build();
+            // 子 agent 自己一份执行器：命令审批照样摆到父会话上，但认得出是哪一趟子 agent 问的（请求上的 session = 子会话 id）
+            installRunner(child);
             return child;
         }
 

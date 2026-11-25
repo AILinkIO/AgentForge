@@ -867,7 +867,16 @@ public final class Editor {
     public int topRows(Window w) { return w.buffer.topRows == null ? 0 : w.buffer.topRows.apply(w).size(); }
 
     /** echo area 叠在最后一行上（选项 echo-area = "overlay"）：没东西要说时不占行，窗口铺满整屏。 */
-    boolean echoOverlay() { return "overlay".equals(options.getString("echo-area")); }
+    boolean echoOverlay() { String v = options.getString("echo-area"); return "overlay".equals(v) || "host".equals(v); }
+
+    /** echo-area = "host"：普通消息不由显示层画（宿主自己摆，例如 agent 工作台底栏的闪现行）；读键提问 / minibuffer 照常盖最后一行。 */
+    boolean echoByHost() { return "host".equals(options.getString("echo-area")); }
+
+    /** 有没有一个等着按键的模态提问（{@link #readKey} / {@link #yOrN}；补全弹框不算）：这时 echo area 里的话是问句，不是闪现。 */
+    public boolean awaitingKey() {
+        for (KeyInterceptor k : interceptors) if (!(k instanceof CompletionInterceptor)) return true;
+        return false;
+    }
 
     int gutterWidth(Window w) {
         if (w == miniWindow || !w.buffer.flag("display-line-numbers")) return 0;

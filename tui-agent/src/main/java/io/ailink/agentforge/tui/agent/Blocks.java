@@ -73,6 +73,12 @@ final class Blocks {
 
         /** 路径写成相对工作区根的样子（在根外面就原样）。 */
         default String rel(String path) { return path; }
+
+        /** 某一趟子 agent 的称呼（{@code junior #1}）；不知道 ⇒ null。 */
+        default String runLabel(String runId) { return null; }
+
+        /** 某一趟子 agent 的颜色 face（记录区、状态行、总览共用一套）。 */
+        default String runFace(String runId) { return "agent-magenta"; }
     }
 
     /** 宿主拼的虚条目（活区、合并后的工具格）用的 meta 键。 */
@@ -94,10 +100,13 @@ final class Blocks {
             return virtual("lines", raw, m);
         }
 
-        static Entry approval(ApprovalRequest r, String who) {
+        static Entry approval(ApprovalRequest r, String who) { return approval(r, who, null); }
+
+        static Entry approval(ApprovalRequest r, String who, String whoFace) {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("request", r);
             if (who != null) m.put("who", who);
+            if (whoFace != null) m.put("who-face", whoFace);
             return virtual("approval", r.id(), m);
         }
 
@@ -768,27 +777,37 @@ final class Blocks {
         return "·";
     }
 
+    /**
+     * 子 agent 那格（Codex 的 spawn / wait 格）：头一行 {@code • 子 agent junior #1 [后台 · 模型] 描述 (3 步 · 8.4s)}（称呼带这一趟的颜色）。
+     * 跑着时：只露最近 3 步（更早的写「… 前面 N 步」）+ 一行它这会儿在做什么（等你审批时写黄色的「等你审批：…」）；
+     * 跑完：步骤收成一行（成功默认折起，TAB 展开、RET 走进去），结论在下面那格。
+     */
     private static void renderGroup(Chunk c, Entry e, Entry prev, Ctx ctx) {
         gap(c, prev);
         String id = str(e.meta("group"));
         SubRun run = ctx.subRun(id);
-        String status = e.meta("sub-status") instanceof String s ? s : run != null ? run.status() : null;
+        String status = run != null ? run.status() : e.meta("sub-status") instanceof String s ? s : null;
         boolean running = status == null;
         boolean good = ok(status);
         boolean failed = status != null && !good;
+        String attn = e.meta("sub-attn") instanceof String at ? at : null;
         int a = c.pos();
-        c.add("• ", running ? "agent-bullet-run" : failed ? "agent-bullet-err" : "agent-bullet-ok");
+        c.add("• ", attn != null ? "agent-warn" : running ? "agent-bullet-run" : failed ? "agent-bullet-err" : "agent-bullet-ok");
         c.add(Msg.t("Sub-agent"), "agent-title");
+        String label = ctx.runLabel(id);
+        if (label != null) c.add(" " + label, ctx.runFace(id));
         List<String> tags = new ArrayList<>();
-        if (e.flag("sub-bg")) tags.add(Msg.t("background"));
-        if (e.meta("sub-who") instanceof String w) tags.add(w);
-        if (e.meta("sub-model") instanceof String m) tags.add(AgentWorkbench.shortModel(m));
-        if (!tags.isEmpty()) c.add(" [" + String.join(" · ", tags) + "]", "agent-magenta");
+        if (e.flag("sub-bg") || run != null && run.background()) tags.add(Msg.t("background"));
+        if (label == null && e.meta("sub-who") instanceof String w) tags.add(w);
+        String model = run != null && run.model() != null ? run.model() : e.meta("sub-model") instanceof String m ? m : null;
+        if (model != null) tags.add(AgentWorkbench.shortModel(model));
+        if (!tags.isEmpty()) c.add(" [" + String.join(" · ", tags) + "]", label == null ? "agent-magenta" : "agent-dim");
         String desc = str(e.meta("args-preview"));
         if (!desc.isEmpty()) c.add(" " + desc);
-        int steps = e.meta("sub-steps") instanceof Number n ? n.intValue() : run != null ? run.allSteps().size() : 0;
+        int steps = run != null ? run.allSteps().size() : e.meta("sub-steps") instanceof Number n ? n.intValue() : 0;
         StringBuilder rd = new StringBuilder(" (").append(Msg.f("%d steps", steps));
-        if (e.meta("sub-ms") instanceof Number ms) rd.append(" · ").append(secs(ms.longValue()));
+        Long ms = run != null ? run.ms() : e.meta("sub-ms") instanceof Number n ? n.longValue() : null;
+        if (ms != null) rd.append(" · ").append(secs(ms));
         if (running) rd.append(" · ").append(Msg.t("running"));
         if (failed) {
             rd.append(" · ").append(switch (status) {
@@ -796,7 +815,8 @@ final class Blocks {
                 case "max-iterations" -> Msg.t("ran out of iterations");
                 default -> Msg.t("error");
             });
-            if (e.meta("sub-why") instanceof String why) rd.append(": ").append(clip(why, 120));
+            String why = run != null && run.why() != null ? run.why() : e.meta("sub-why") instanceof String wy ? wy : null;
+            if (why != null) rd.append(": ").append(clip(why, 120));
         }
         rd.append(")");
         c.add(rd.toString(), failed ? "agent-err" : "agent-dim");
@@ -806,20 +826,31 @@ final class Blocks {
         c.act(a + 2, headEnd, ed -> ctx.enterChild(ed, id));
         if (run != null) {
             List<SubStep> ss = run.allSteps();
-            int b = c.pos();
-            for (int i = 0; i < ss.size(); i++) {
-                SubStep s = ss.get(i);
-                List<Seg> segs = new ArrayList<>();
-                segs.add(Seg.of(s.name(), s.error() ? "agent-err" : "agent-accent"));
-                if (s.args() != null && !s.args().isEmpty()) segs.add(Seg.of(" " + s.args()));
-                if (s.summary() != null && !s.summary().isEmpty()) segs.add(Seg.of("  " + s.summary(), s.error() ? "agent-err" : "agent-dim"));
-                row(c, "  │ ", "agent-tree", segs, "  │   ", "agent-tree");
+            if (running) {
+                int from = Math.max(0, ss.size() - 3);
+                if (from > 0) row(c, "  │ ", "agent-tree", List.of(Seg.of(Msg.f("… %d earlier steps (RET to enter)", from), "agent-dim")), "  │   ", "agent-tree");
+                for (int i = from; i < ss.size(); i++) stepRow(c, ss.get(i));
+                String act = e.meta("sub-activity") instanceof String x ? x : null;
+                if (attn != null) row(c, TREE, "agent-tree", List.of(Seg.of("⚠ " + attn, "agent-warn")), TREE_REST, null);
+                else if (act != null) row(c, TREE, "agent-tree", List.of(Seg.of(act, "agent-reasoning")), TREE_REST, null);
+            } else {
+                int b = c.pos();
+                for (SubStep s : ss) stepRow(c, s);
+                if (!ss.isEmpty()) c.fold(b, c.pos(), List.of(Seg.of("  │ ", "agent-tree"),
+                        Seg.of(Msg.f("%d steps (TAB to expand, RET to enter)", ss.size()), "agent-dim")), "group:" + id, good, true);
             }
-            if (!ss.isEmpty()) c.fold(b, c.pos(), List.of(Seg.of("  │ ", "agent-tree"),
-                    Seg.of(Msg.f("%d steps (TAB to expand, RET to enter)", ss.size()), "agent-dim")), "group:" + id, good, true);
         }
         c.raw = "task " + desc;
         c.blockId = "group";
+    }
+
+    private static void stepRow(Chunk c, SubStep s) {
+        List<Seg> segs = new ArrayList<>();
+        boolean live = s.summary() == null;
+        segs.add(Seg.of(s.name(), s.error() ? "agent-err" : live ? "agent-accent-bold" : "agent-accent"));
+        if (s.args() != null && !s.args().isEmpty()) segs.add(Seg.of(" " + s.args()));
+        if (!live && !s.summary().isEmpty()) segs.add(Seg.of("  " + s.summary(), s.error() ? "agent-err" : "agent-dim"));
+        row(c, "  │ ", "agent-tree", segs, "  │   ", "agent-tree");
     }
 
     /** 旧对话里那一趟子 agent 的步骤（会话对象没留下，只剩一行行摘要）：每步一行 {@code • name args  摘要}。 */
@@ -963,14 +994,15 @@ final class Blocks {
         ApprovalRequest r = (ApprovalRequest) e.meta("request");
         gap(c, prev);
         Preview.Result pv = r.preview();
-        String who = e.meta("who") instanceof String w ? "  " + Msg.f("(sub-agent %s)", w) : "";
+        String who = e.meta("who") instanceof String w ? "  ← " + w + " " + Msg.t("asks") : "";
+        String whoFace = e.meta("who-face") instanceof String f ? f : "agent-dim";
         if (pv != null && pv.kind() == Preview.Kind.DIFF && pv.text() != null && !pv.text().isBlank()) {
             PreviewDiff pd = fromPreview(pv.text(), ctx);
             String target = pd.files().size() == 1 ? pd.files().getFirst().path() : pd.files().isEmpty() ? String.valueOf(r.toolName()) : Msg.f("%d files", pd.files().size());
             List<Seg> h = new ArrayList<>(List.of(Seg.of(Msg.t("Proposed Change"), "agent-title"), Seg.of(" " + target)));
             if (!pd.empty()) h.addAll(List.of(Seg.of(" (", "agent-dim"), Seg.of("+" + pd.plus(), "agent-ok"), Seg.of(" ", "agent-dim"),
                     Seg.of("−" + pd.minus(), "agent-err"), Seg.of(")", "agent-dim")));
-            h.add(Seg.of(who, "agent-dim"));
+            h.add(Seg.of(who, whoFace));
             head(c, "agent-bullet-run", h);
             for (FileDiff f : pd.files()) {
                 if (pd.files().size() > 1) row(c, TREE, "agent-tree", List.of(Seg.of(f.path()), Seg.of(" (", "agent-dim"), Seg.of("+" + f.plus(), "agent-ok"),
@@ -979,7 +1011,7 @@ final class Blocks {
             }
             for (String n : pd.notes()) row(c, INDENT, null, List.of(Seg.of(n, pd.empty() ? "agent-warn" : "agent-dim")), INDENT, null);
         } else {
-            head(c, "agent-bullet-run", List.of(Seg.of(Msg.t("Waiting for your approval (panel below)"), "agent-warn"), Seg.of(who, "agent-dim")));
+            head(c, "agent-bullet-run", List.of(Seg.of(Msg.t("Waiting for your approval (panel below)"), "agent-warn"), Seg.of(who, whoFace)));
         }
         c.blockId = "approval";
         c.raw = r.title();

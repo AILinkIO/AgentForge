@@ -60,6 +60,26 @@ class AgentSessionTest {
     }
 
     @Test
+    void changeDiffIsCapturedBeforeAnUnapprovedWrite() throws Exception {
+        Files.writeString(root.resolve("c.txt"), "one\ntwo\nthree\n");
+        FakeCaller fc = new FakeCaller().thenTool("r1", "read-file", "path", "c.txt").thenTool("w1", "write-file", "path", "c.txt", "content", "one\nTWO\nthree\n")
+                .thenTool("p1", "apply-patch", "patchText", "*** Begin Patch\n*** Update File: c.txt\n@@\n one\n-TWO\n+2\n*** End Patch")
+                .thenText("改好了");
+        AgentSession s = session(fc, false, files());
+        s.send("改");
+        assertTrue(s.awaitIdle(T));
+        assertEquals("one\n2\nthree\n", Files.readString(root.resolve("c.txt")));
+        String w = s.changeDiff("w1");
+        assertNotNull(w, "没过审批的 write-file 也记下了改动");
+        assertTrue(w.contains("-two") && w.contains("+TWO"), w);
+        assertTrue(w.contains("@@ -1,3 +1,3 @@"), "真行号：\n" + w);
+        String p = s.changeDiff("p1");
+        assertNotNull(p);
+        assertTrue(p.startsWith("M ") && p.contains("-TWO") && p.contains("+2"), "补丁按动手前的文件算：\n" + p);
+        assertNull(s.changeDiff("nope"));
+    }
+
+    @Test
     void toolUsingTurnEndToEnd() throws Exception {
         Files.writeString(root.resolve("a.txt"), "hello world\n");
         FakeCaller fc = new FakeCaller().thenTool("t1", "read-file", "path", "a.txt").thenText("文件里写的是 hello world");
