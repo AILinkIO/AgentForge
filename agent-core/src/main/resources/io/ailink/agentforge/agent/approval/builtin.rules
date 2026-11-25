@@ -1,0 +1,37 @@
+# AgentForge 内建执行规则（Codex execpolicy 语法：prefix_rule / network_rule / host_executable）。
+# 优先级最低，但判决按「多条命中取最严」，用户 / 项目规则只能更严，放不宽它们。
+# 不想要这些：在 <配置目录>/rules/ 下放一份同名的 builtin.rules（空文件也行）就整份盖掉。
+#
+# 这几条接替 coxswain 时代「rm 一族、git clean 每次都问」的启发式：会丢掉没提交的工作、或改写远端历史的 git 操作，
+# 沙盒管不住（它们只动工作根和 .git），所以由规则要求用户过目。审批策略是 never 时它们会被直接拒绝。
+
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "prompt",
+    justification = "会丢掉工作区里还没提交的改动",
+    match = ["git reset --hard", "git reset --hard HEAD~1"],
+    not_match = ["git reset --soft HEAD~1", "git reset HEAD file.txt"],
+)
+
+prefix_rule(
+    pattern = ["git", "clean"],
+    decision = "prompt",
+    justification = "会删掉没被跟踪的文件，删了找不回来",
+    match = ["git clean -fd", "git clean -n"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["--force", "-f", "--force-with-lease", "--mirror", "--delete"]],
+    decision = "prompt",
+    justification = "会改写或删除远端的历史",
+    match = ["git push --force", "git push -f origin main"],
+    not_match = ["git push origin main"],
+)
+
+prefix_rule(
+    pattern = ["git", "checkout", ["--", "."]],
+    decision = "prompt",
+    justification = "会丢掉工作区里还没提交的改动",
+    match = ["git checkout -- src/a.c", "git checkout ."],
+    not_match = ["git checkout main"],
+)

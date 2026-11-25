@@ -1,0 +1,39 @@
+[versions]
+spring-boot = "4.1.0"
+spring-ai = "2.0.0"
+picocli = "4.7.6"
+jline = "3.27.0"
+jinjava = "2.8.3"
+flexmark = "0.64.8"
+javaluator = "3.0.4"
+rsyntaxtextarea = "4.0.2"
+
+[libraries]
+spring-boot-bom = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
+spring-ai-bom = { module = "org.springframework.ai:spring-ai-bom", version.ref = "spring-ai" }
+spring-boot-starter = { module = "org.springframework.boot:spring-boot-starter" }
+spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
+spring-ai-model = { module = "org.springframework.ai:spring-ai-model" }
+spring-ai-client-chat = { module = "org.springframework.ai:spring-ai-client-chat" }
+spring-ai-anthropic = { module = "org.springframework.ai:spring-ai-anthropic" }
+spring-ai-openai = { module = "org.springframework.ai:spring-ai-openai" }
+spring-ai-starter-anthropic = { module = "org.springframework.ai:spring-ai-starter-model-anthropic" }
+spring-ai-starter-openai = { module = "org.springframework.ai:spring-ai-starter-model-openai" }
+jackson-databind = { module = "tools.jackson.core:jackson-databind" }
+slf4j-api = { module = "org.slf4j:slf4j-api" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+picocli = { module = "info.picocli:picocli", version.ref = "picocli" }
+jline = { module = "org.jline:jline", version.ref = "jline" }
+jinjava = { module = "com.hubspot.jinjava:jinjava", version.ref = "jinjava" }
+flexmark = { module = "com.vladsch.flexmark:flexmark", version.ref = "flexmark" }
+flexmark-yaml = { module = "com.vladsch.flexmark:flexmark-ext-yaml-front-matter", version.ref = "flexmark" }
+flexmark-tables = { module = "com.vladsch.flexmark:flexmark-ext-tables", version.ref = "flexmark" }
+flexmark-strikethrough = { module = "com.vladsch.flexmark:flexmark-ext-gfm-strikethrough", version.ref = "flexmark" }
+flexmark-tasklist = { module = "com.vladsch.flexmark:flexmark-ext-gfm-tasklist", version.ref = "flexmark" }
+flexmark-autolink = { module = "com.vladsch.flexmark:flexmark-ext-autolink", version.ref = "flexmark" }
+rsyntaxtextarea = { module = "com.fifesoft:rsyntaxtextarea", version.ref = "rsyntaxtextarea" }
+javaluator = { module = "com.fathzer:javaluator", version.ref = "javaluator" }
+
+[plugins]
+spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }

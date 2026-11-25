@@ -1,0 +1,30 @@
+spring:
+    main:
+        web-application-type: none
+        banner-mode: off
+    application:
+        name: AgentForge
+    ai:
+        model:
+            chat: ${LLM_PROVIDER:anthropic}   # anthropic | openai（Spring AI 2.0 的取值）
+        openai:
+            api-key: ${OPENAI_API_KEY:}
+            base-url: https://api.openai.com
+            chat:
+                options:
+                    model: gpt-4o
+                    max-tokens: 16384
+        anthropic:
+            api-key: ${ANTHROPIC_AUTH_TOKEN:}
+            base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
+            chat:
+                options:
+                    model: MiniMax-M2.5
+                    max-tokens: 16384
+
+agentforge:
+    data-dir: ${AGENTFORGE_DATA_DIR:./data}
+
+logging:
+    level:
+        root: warn
