@@ -460,7 +460,10 @@ interface Store {
                     }
                 } else if (e.cond != null) kvOps.add(BatchOp.check(e.key, e.cond));
             }
+            // 读到一半的目录树已被别人改过（布局 2）：整条语句重跑。过期标记取算 op 之前的（同 clj：收尾里的读不计入）
+            boolean stale = sess.stale();
             List<BatchOp> ops = sess.commitOps(kvOps);
+            if (stale) return "conflict";
             if (ops == null || ops.stream().allMatch(o -> o instanceof BatchOp.Check)) return "noop";
             return db.tryWriteAtomic(ops).isConflict() ? "conflict" : "ok";
         }

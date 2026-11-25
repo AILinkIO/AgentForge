@@ -82,8 +82,8 @@ class GraphViewerTest {
         return vs.stream().map(SubgraphVertex::vid).toList();
     }
 
-    static final List<GroupSummary> SEED_GROUPS = List.of(new GroupSummary(Direction.OUT, 7, 2, false, 0),
-            new GroupSummary(Direction.OUT, 8, 1, false, 0));
+    static final List<GroupSummary> SEED_GROUPS = List.of(new GroupSummary(Direction.OUT, 7, 2, false, 0, null),
+            new GroupSummary(Direction.OUT, 8, 1, false, 0, null));
 
     @Test
     void describeKeyAndValue() {
@@ -104,7 +104,9 @@ class GraphViewerTest {
         assertEquals(m("groups", SEED_GROUPS), Graph.describeValue(GraphKeys.ascii(GraphKeys.head(1)), db.get(GraphKeys.head(1))));
         byte[] chunk1 = b(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0);
         assertEquals(m("count", 1), Graph.describeValue(GraphKeys.ascii(GraphKeys.chunkKey(1, 0, 7, 2, 9)), chunk1));
-        assertEquals(m("inline-max", 4096L, "chunk-max", 4096L, "props-max", 128L),
+        // 新库是布局 2（keelson D-51）：g 里多了按条数切块、块数安全阀、目录外置的参数
+        assertEquals(m("layout", 2, "inline-max", 4096L, "chunk-max", 65536L, "props-max", 128L,
+                        "chunk-entries", 512L, "chunk-count-max", 65536L, "dir-inline-max", 16L, "dir-node-max", 256L),
                 Graph.describeValue(GraphKeys.ascii(GraphKeys.GRAPH_META), db.get(GraphKeys.GRAPH_META)));
         long id = g.registerEtype("weight");
         String k = GraphKeys.etypeName(id);
@@ -131,7 +133,7 @@ class GraphViewerTest {
         GroupSummary group = summary.groups().stream().filter(x -> x.etype() == 7 && x.chunked()).findFirst().orElseThrow();
         assertTrue(group.chunks() > 0);
         assertEquals(100, group.count());
-        assertEquals(new GroupSummary(Direction.OUT, 7, 100, true, group.chunks()), group);
+        assertEquals(new GroupSummary(Direction.OUT, 7, 100, true, group.chunks(), null), group);
         byte[] lo = GraphKeys.ascii(GraphKeys.head(1));
         Entry e = db.rangeEntries(RangeOptions.between(lo, GraphKeys.successor(lo))).stream()
                 .filter(x -> GraphKeys.parseChunk(x.key()) != null).findFirst().orElseThrow();

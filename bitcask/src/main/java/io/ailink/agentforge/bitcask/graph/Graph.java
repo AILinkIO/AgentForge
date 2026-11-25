@@ -28,6 +28,7 @@ import io.ailink.agentforge.bitcask.BitcaskException;
 import io.ailink.agentforge.bitcask.Condition;
 import io.ailink.agentforge.bitcask.Entry;
 import io.ailink.agentforge.bitcask.RangeOptions;
+import io.ailink.agentforge.bitcask.VersionedValue;
 import io.ailink.agentforge.bitcask.graph.Adjacency.AdjEntry;
 import io.ailink.agentforge.bitcask.graph.Adjacency.FullEntry;
 import io.ailink.agentforge.bitcask.graph.Adjacency.Group;
@@ -37,6 +38,8 @@ import io.ailink.agentforge.bitcask.graph.Adjacency.Session;
 /**
  * 图存储层 V1（邻接表布局 + 保留命名空间前缀；与 clj-bitcask {@code im.ttalk.bitcask.graph}、Erlang bitcask 图层数据互通）。
  * 一个顶点两个 KV —— 顶点 {@code n} + 邻接表头 {@code a}；hub 超过阈值把最大的组拆成块；超过内联上限的边属性落 {@code p} 家族。
+ * 新库是布局 2（g 版本 2，keelson D-51）：块按条数切、块数多的组的块目录外置成 {@code d} 家族的 B+ 树；布局 1 的库照旧读写，
+ * {@link #upgradeLayout} 之后碰到的组再转（数据与 clj-bitcask 逐字节相同）。
  * <ul>
  * <li>取邻居 / 度数 = 一次点查。</li>
  * <li>写边 = 两端邻接表头的条件写（读头带回 LSN，提交时有人先改过 ⇒ 整批不写 ⇒ 重读重试，缺省 8 次、指数抖动退避，耗尽抛
@@ -56,7 +59,7 @@ public final class Graph {
     private static final int CONSISTENT_TRIES = 32;
     private static final byte[] EMPTY = GraphModel.EMPTY;
 
-    /** g 键写入后不再变：按库句柄（身份）缓存解出的参数，写会话不必每次读 g。 */
+    /** g 键按库句柄（身份）缓存解出的参数，写会话不必每次读 g；{@link #upgradeLayout} 改写它时同时更新缓存（别的句柄要重开）。 */
     private static final Map<Bitcask, GraphConfig> CFG_CACHE = Collections.synchronizedMap(new WeakHashMap<>());
 
     private final Bitcask db;
@@ -100,7 +103,7 @@ public final class Graph {
 
     // ═══ 布局 / 参数 ═══
 
-    /** 图布局：{@code "v1"}（有 g 键）| {@code "empty"}。 */
+    /** 图布局：{@code "v1"}（有 g 键）| {@code "empty"}。g 里的版本（块目录在头里的布局 1 / 目录外置的布局 2）见 {@link GraphConfig#layout()}。 */
     public String layout() {
         return db.get(GraphKeys.GRAPH_META) != null ? "v1" : "empty";
     }
@@ -119,7 +122,7 @@ public final class Graph {
         return c != null ? c : readCfg(db);
     }
 
-    /** 生效的图参数（g 键；没有 ⇒ 缺省）。 */
+    /** 生效的图参数（g 键；没有 ⇒ 缺省 = 布局 2）。 */
     public static GraphConfig config(Bitcask db) {
         GraphConfig c = cachedCfg(db);
         return c != null ? c : GraphConfig.DEFAULT;
@@ -133,15 +136,50 @@ public final class Graph {
         return init(GraphConfig.DEFAULT);
     }
 
+    /** 首次写入前指定参数并写 g 键（选项同 clj {@code init!}，见 {@link GraphConfig.Options}；缺省布局 2，{@code layout(1)} = 旧布局）。 */
+    public GraphConfig init(GraphConfig.Options opts) {
+        return initWith(opts.build());
+    }
+
     /** 首次写入前指定分块参数并写 g 键；已有 g ⇒ 不改，回现有参数。布局版本不认得 ⇒ {@code bitcask/graph-layout-unknown}。 */
     public GraphConfig init(GraphConfig cfg) {
-        GraphConfig c = GraphConfig.of(cfg.inlineMax(), cfg.chunkMax(), cfg.propsMax());
+        return initWith(cfg.validated());
+    }
+
+    private GraphConfig initWith(GraphConfig c) {
         while (true) {
             GraphConfig cur = readCfg(db);
             if (cur != null) return cur;
             if (db.tryWriteAtomic(List.of(BatchOp.put(GraphKeys.ascii(GraphKeys.GRAPH_META), c.encode(), Condition.absent()))).isSuccess()) {
                 CFG_CACHE.put(db, c);
                 return c;
+            }
+        }
+    }
+
+    public GraphConfig upgradeLayout() {
+        return upgradeLayout(GraphConfig.options());
+    }
+
+    /**
+     * 布局 1 的库升级到布局 2：只改写 g（带版本条件），数据不整库重写 —— 之后被写到的组按布局 2 的规则逐个转换（块目录超过 dirInlineMax 外置、
+     * 超限的块按条数切）；读不依赖已经转完。opts 只取布局 2 的那几个（不给 ⇒ 缺省；inline-max / props-max 沿用库里的，除非显式给）。
+     * 单向：升级后旧版本的程序拒开。已是布局 2 / 还没有图 ⇒ 回现有 / 缺省参数，不写。别的句柄要重开才看得到新参数（g 按句柄缓存）。
+     */
+    public GraphConfig upgradeLayout(GraphConfig.Options opts) {
+        while (true) {
+            VersionedValue v = db.getWithOrd(GraphKeys.GRAPH_META);
+            if (v == null) return config();
+            GraphConfig cur = GraphConfig.decode(v.value());
+            if (cur == null) throw BitcaskException.of("bitcask/graph-layout-unknown");
+            if (cur.layout2()) return cur;
+            GraphConfig.Options o = opts.copy();
+            if (o.adjInlineMax == null) o.adjInlineMax(cur.inlineMax());
+            if (o.propsInlineMax == null) o.propsInlineMax(cur.propsMax());
+            GraphConfig cfg = o.layout(2).build();
+            if (db.tryWriteAtomic(List.of(BatchOp.put(GraphKeys.ascii(GraphKeys.GRAPH_META), cfg.encode(), Condition.ord(v.ord())))).isSuccess()) {
+                CFG_CACHE.put(db, cfg);
+                return cfg;
             }
         }
     }
@@ -480,7 +518,7 @@ public final class Graph {
             List<Group> gs = Adjacency.decodeHead(e.value(), want);
             if (gs == null) throw BitcaskException.of("bitcask/graph-adjacency-malformed", GraphModel.vidText(src));
             List<Group> outs = gs.stream().filter(g -> g.dir() == 0 && (et == null || et == g.etype()) && !g.skipped()).toList();
-            boolean chunked = outs.stream().anyMatch(g -> g.chunks() != null);
+            boolean chunked = outs.stream().anyMatch(g -> g.chunks() != null || g.xdir() != null);
             if (chunked) {
                 long left = limit >= 0 ? limit - acc.size() : -1;
                 acc.addAll(Adjacency.groupRows(db, src, outs, 0, et, left,
@@ -580,8 +618,8 @@ public final class Graph {
 
     // ═══ 检视（查看工具用的稳定接口）═══
 
-    /** 邻接表组摘要。 */
-    public record GroupSummary(Direction dir, long etype, long count, boolean chunked, int chunks) {
+    /** 邻接表组摘要：{@code dirLevels} 只在块目录外置（布局 2）时有，否则 null。 */
+    public record GroupSummary(Direction dir, long etype, long count, boolean chunked, long chunks, Integer dirLevels) {
     }
 
     /** 顶点的邻接表摘要。 */
@@ -591,8 +629,8 @@ public final class Graph {
     private static final Pattern HEX4 = Pattern.compile("[0-9a-f]{4}");
 
     /**
-     * 识别原始图键（只看键布局，不读库）：不是图键 ⇒ null。返回 map：{@code family}（node / head / chunk / props / meta / etype-name /
-     * etype-map / label / vid-counter / rank-floor / merge-guard）+ 该家族的字段（vid、dir、etype、lb、src、dst、rank、name、label）。
+     * 识别原始图键（只看键布局，不读库）：不是图键 ⇒ null。返回 map：{@code family}（node / head / chunk / props / dir-node / meta / etype-name /
+     * etype-map / label / vid-counter / rank-floor / merge-guard）+ 该家族的字段（vid、dir、etype、lb、level、src、dst、rank、name、label）。
      */
     public static Map<String, Object> describeKey(byte[] kb) {
         if (kb == null) return null;
@@ -602,6 +640,7 @@ public final class Graph {
         GraphKeys.ChunkKey chunk = GraphKeys.parseChunk(kb);
         long[] props = GraphKeys.parsePropsKey(kb);
         GraphKeys.LabelKey lk;
+        GraphKeys.DirNodeKey dn;
         Long v;
         if ((v = GraphKeys.parseNode(kb)) != null) {
             m.put("family", "node");
@@ -621,6 +660,13 @@ public final class Graph {
             m.put("etype", props[1]);
             m.put("dst", props[2]);
             m.put("rank", props[3]);
+        } else if ((dn = GraphKeys.parseDirNode(kb)) != null) {
+            m.put("family", "dir-node");
+            m.put("vid", dn.vid());
+            m.put("dir", dn.dir() == 0 ? Direction.OUT : Direction.IN);
+            m.put("etype", dn.etype());
+            m.put("level", dn.level());
+            m.put("lb", List.of(dn.other(), dn.rank()));
         } else if (kb.length == pl + 1 && kb[pl] == 'g') {
             m.put("family", "meta");
         } else if ((v = GraphKeys.parseEtypeKey(kb)) != null) {
@@ -655,13 +701,16 @@ public final class Graph {
     }
 
     private static List<GroupSummary> summaries(List<Group> gs) {
-        return gs.stream().map(g -> new GroupSummary(g.dir() == 0 ? Direction.OUT : Direction.IN, g.etype(), g.count(), g.chunks() != null,
-                g.chunks() != null ? g.chunks().size() : 0)).toList();
+        return gs.stream().map(g -> new GroupSummary(g.dir() == 0 ? Direction.OUT : Direction.IN, g.etype(), g.count(),
+                g.chunks() != null || g.xdir() != null,
+                g.xdir() != null ? g.xdir().n() : g.chunks() != null ? g.chunks().size() : 0,
+                g.xdir() != null ? g.xdir().levels() : null)).toList();
     }
 
     /**
      * 解码原始图键的值（只读、稳定）：值或布局畸形 ⇒ {@code {"malformed": 家族}}，不抛。头 ⇒ {@code groups}；块 ⇒ {@code count}；
-     * g ⇒ 图参数；t / tn ⇒ etype 注册表；n / p ⇒ {@code value} 原样。不是图键 ⇒ null。
+     * 目录节点 ⇒ {@code level count}；g ⇒ 图参数（带 layout）；t / tn ⇒ etype 注册表；l ⇒ {@code empty}；c ⇒ {@code next-vid} / {@code exhausted}；
+     * r ⇒ {@code rank-floor}；m ⇒ {@code version}；n / p ⇒ {@code value} 原样。不是图键 ⇒ null。
      */
     public static Map<String, Object> describeValue(byte[] key, byte[] v) {
         Map<String, Object> k = describeKey(key);
@@ -692,10 +741,48 @@ public final class Graph {
                 GraphConfig c = GraphConfig.decode(v);
                 if (c == null) bad.run();
                 else {
+                    out.put("layout", c.layout());
                     out.put("inline-max", c.inlineMax());
                     out.put("chunk-max", c.chunkMax());
                     out.put("props-max", c.propsMax());
+                    if (c.layout2()) {
+                        out.put("chunk-entries", c.chunkEntries());
+                        out.put("chunk-count-max", c.chunkCountMax());
+                        out.put("dir-inline-max", c.dirInlineMax());
+                        out.put("dir-node-max", c.dirNodeMax());
+                    }
                 }
+            }
+            case "dir-node" -> {
+                Adjacency.Node nd = Adjacency.decodeNode(v);
+                if (nd == null) bad.run();
+                else {
+                    out.put("level", nd.level());
+                    out.put("count", nd.lbs().size());
+                }
+            }
+            case "label" -> {
+                if (v.length == 0) out.put("empty", true);
+                else bad.run();
+            }
+            case "vid-counter" -> {
+                GraphModel.Watermark w;
+                try {
+                    w = GraphModel.decodeCounter(v);
+                } catch (RuntimeException ex) {
+                    w = null;
+                }
+                if (w == null) bad.run();
+                else if (w.exhausted()) out.put("exhausted", true);
+                else out.put("next-vid", w.next());
+            }
+            case "rank-floor" -> {
+                if (v.length == 8) out.put("rank-floor", GraphKeys.bytesToU64(v));
+                else bad.run();
+            }
+            case "merge-guard" -> {
+                if (v.length == 8) out.put("version", GraphKeys.bytesToU64(v));
+                else bad.run();
             }
             case "etype-name" -> {
                 if (v.length > 0) out.put("name", new String(v, StandardCharsets.UTF_8));
@@ -1130,7 +1217,8 @@ public final class Graph {
         if (ps.size() < CAP) ps.add(p);
     }
 
-    private long checkVertex(long vid, List<Group> gs, Map<List<Object>, List<AdjEntry>> seenChunks, List<List<Object>> problems) {
+    private long checkVertex(long vid, List<Group> gs, Map<List<Object>, List<AdjEntry>> seenChunks, List<List<Object>> problems,
+                             Set<String> dirNodes) {
         long edges = 0;
         Set<List<Object>> used = new HashSet<>();
         for (Group g : gs) {
@@ -1139,6 +1227,13 @@ public final class Graph {
             else {
                 es = new ArrayList<>();
                 List<LB> lbs = g.chunks();
+                if (g.xdir() != null) {
+                    // 布局 2：目录树逐个节点核对，走到的节点记下来（最后找 d 家族里的孤儿）
+                    Adjacency.XdirCheck xc = Adjacency.xdirCheck(db, vid, g.dir(), g.etype(), g.xdir().levels(), g.xdir().n());
+                    dirNodes.addAll(xc.nodes());
+                    for (List<Object> p : xc.problems()) addProblem(problems, p);
+                    lbs = xc.lbs();
+                }
                 for (int i = 0; i < lbs.size(); i++) {
                     LB lb = lbs.get(i), nxt = i + 1 < lbs.size() ? lbs.get(i + 1) : null;
                     List<Object> key = List.of(g.dir(), g.etype(), lb);
@@ -1205,7 +1300,8 @@ public final class Graph {
     }
 
     /**
-     * 流式扫 a / p 家族逐条核对：头 / 块可解码；块目录 = 实际块键、块内条目落在自己的下界区间；每组 Count = 实际条目数；对称；
+     * 流式扫 a / d / p 家族逐条核对：头 / 块可解码；块目录（头里的，或布局 2 外置的目录树：节点逐个核对、没有孤儿节点）= 实际块键、
+     * 块内条目落在自己的下界区间；每组 Count = 实际条目数；对称；
      * 标 ext 的出边 ⟺ 有 p 键；标签索引 = 各顶点 _labels 展开的集合；id 高水位大于任何已用的 vid。诊断 / 测试用。
      */
     public InvariantReport checkInvariants() {
@@ -1213,11 +1309,12 @@ public final class Graph {
         long[] counters = new long[3]; // vertices edges chunks
         Object[] st = new Object[3];   // vid gs chunks
         Long[] maxHead = new Long[1];
+        Set<String> dirNodes = new HashSet<>();
         Runnable finish = () -> {
             if (st[0] == null) return;
             @SuppressWarnings("unchecked") Map<List<Object>, List<AdjEntry>> ch = (Map<List<Object>, List<AdjEntry>>) st[2];
             @SuppressWarnings("unchecked") List<Group> gs = (List<Group>) st[1];
-            counters[1] += checkVertex((Long) st[0], gs, ch, problems);
+            counters[1] += checkVertex((Long) st[0], gs, ch, problems, dirNodes);
             st[0] = null;
             st[1] = null;
             st[2] = new HashMap<>();
@@ -1252,6 +1349,13 @@ public final class Graph {
             return true;
         });
         finish.run();
+        // 布局 2 的目录节点：每个都要能从某个组的根走到
+        byte[] dlo = GraphKeys.familyBytes("d");
+        db.forEachRange(RangeOptions.between(dlo, GraphKeys.successor(dlo)).batch(256), e -> {
+            String k = new String(e.key(), StandardCharsets.US_ASCII);
+            if (!dirNodes.contains(k)) addProblem(problems, List.of("orphan-dir-node", k));
+            return true;
+        });
         for (Entry e : GraphModel.rangeAll(db, GraphKeys.familyBytes("p"), false, 256)) {
             long[] k = GraphKeys.parsePropsKey(e.key());
             if (k != null && !Adjacency.isExt(Adjacency.lookup(db, k[0], 0, k[1], k[2], k[3])))

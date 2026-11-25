@@ -30,16 +30,21 @@ import io.ailink.agentforge.bitcask.VersionedValue;
  * Group = &lt;&lt;Dir:8, GFlags:8, Etype:32, Count:64, Body&gt;&gt;
  *         Body（内联）= Entry × Count
  *         Body（分块）= &lt;&lt;NChunks:32, &lt;&lt;Other:64, Rank:64&gt;&gt; × NChunks&gt;&gt;（各块下界，块 0 恒为 (0, 0)）
+ *         Body（分块、目录外置，布局 2）= &lt;&lt;NChunks:32, Levels:8&gt;&gt;（块目录是 d 家族的一棵 B+ 树）
  * Chunk = &lt;&lt;1:8, GFlags:8, Count:32, Entry × Count&gt;&gt;
- * GFlags：bit0 有 rank ≠ 0、bit1 有属性、bit2 已分块
+ * DirNode = &lt;&lt;1:8, Level:8, Count:16, &lt;&lt;Other:64, Rank:64&gt;&gt; × Count&gt;&gt;（子节点下界，升序；首项 = 节点自己的下界）
+ * GFlags：bit0 有 rank ≠ 0、bit1 有属性、bit2 已分块、bit3 目录外置（布局 2）
  * Entry = &lt;&lt;Other:64&gt;&gt; [&lt;&lt;Rank:64&gt;&gt;] [&lt;&lt;PLen:16, Props&gt;&gt;]；PLen = 0xFFFF ⇒ 属性在 p 家族
  * </pre>
  * 不变式：① 对称（a 的出边组有 (t, b, r) ⟺ b 的入边组有 (t, a, r)，同批写）；② 头即版本（邻接的任何修改都重写头 ⇒ 写会话只对头设前置条件）；
  * ③ Count = 实际条目数、块目录 = 实际块键。条目的属性是 byte[] 或哨兵 {@link #EXT}（按身份比较）。other / rank 按无符号排序。
- * <p>clj 版写会话里的「字节视图」优化没有移植（只影响速度，落盘字节相同）。
+ * <p>布局 2（keelson D-51，designs/graph-layout-2.md）：每一组边是 KV 上的一棵 B+ 树 —— 块是叶子，d 家族的目录节点是内部节点，
+ * 头里只记块数与层数；加一条边 = 重写一个块 + 很小的头，目录节点只在块分裂 / 删空时才写，写入量与度数无关。
+ * 节点靠 key（层, 下界）定位、不原地修改；删除不合并 / 再平衡，只删空块、空节点。并发仍是「头即版本」。
+ * <p>clj 版写会话里的「字节视图」优化没有移植（只影响速度，落盘字节相同）；目录节点读路径保留了字节视图（{@link LbView}）。
  */
 public final class Adjacency {
-    static final int F_RANK = 1, F_PROPS = 2, F_CHUNKED = 4;
+    static final int F_RANK = 1, F_PROPS = 2, F_CHUNKED = 4, F_XDIR = 8;
     static final int PEXT = 0xFFFF;
     /** 外置属性哨兵：按身份（==）判别，不与任何空数组混用。 */
     static final byte[] EXT = new byte[0];
@@ -61,6 +66,13 @@ public final class Adjacency {
     public record LB(long o, long r) {
     }
 
+    /** 下界的无符号序。 */
+    static final Comparator<LB> LB_ORDER = (a, b) -> cmp(a.o, a.r, b.o, b.r);
+
+    /** 目录外置的组在头里的形态（布局 2）：块数、目录树层数（≥ 1）。 */
+    public record XDir(long n, int levels) {
+    }
+
     /** 带方向的条目（first-entries 用）。 */
     public record FullEntry(int dir, long etype, long other, long rank, byte[] props) {
     }
@@ -74,29 +86,38 @@ public final class Adjacency {
     }
 
     /**
-     * 组：内联组带 {@code entries}，分块组带 {@code chunks}（下界表）。RAW 解码的组不带条目：内联组 {@code bytes + raw}（条目区起点），
-     * 分块组 {@code bytes + raw + nchunks}（块目录起点）；SKIP 的组只能拿来数 count。
+     * 组：内联组带 {@code entries}，分块组带 {@code chunks}（头里的下界表）或 {@code xdir}（布局 2 目录外置：任何解码方式都带上）。
+     * RAW 解码的组不带条目：内联组 {@code bytes + raw}（条目区起点），分块组 {@code bytes + raw + nchunks}（块目录起点）；
+     * SKIP 的组只能拿来数 count。
      */
-    public record Group(int dir, long etype, long count, int flags, List<AdjEntry> entries, List<LB> chunks, byte[] bytes, int raw,
+    public record Group(int dir, long etype, long count, int flags, List<AdjEntry> entries, List<LB> chunks, XDir xdir, byte[] bytes, int raw,
                  long nchunks, boolean skipped) {
         static Group inline(int dir, long etype, long count, int flags, List<AdjEntry> es) {
-            return new Group(dir, etype, count, flags, es, null, null, -1, -1, false);
+            return new Group(dir, etype, count, flags, es, null, null, null, -1, -1, false);
         }
 
         static Group chunked(int dir, long etype, long count, int flags, List<LB> lbs) {
-            return new Group(dir, etype, count, flags, null, lbs, null, -1, -1, false);
+            return new Group(dir, etype, count, flags, null, lbs, null, null, -1, -1, false);
+        }
+
+        static Group external(int dir, long etype, long count, int flags, XDir x) {
+            return new Group(dir, etype, count, flags, null, null, x, null, -1, -1, false);
         }
 
         Group withEntries(List<AdjEntry> es, long cnt) {
-            return new Group(dir, etype, cnt, flags, es, null, null, -1, -1, false);
+            return new Group(dir, etype, cnt, flags, es, null, null, null, -1, -1, false);
         }
 
         Group withCount(long cnt, int fl) {
-            return new Group(dir, etype, cnt, fl, entries, chunks, bytes, raw, nchunks, skipped);
+            return new Group(dir, etype, cnt, fl, entries, chunks, xdir, bytes, raw, nchunks, skipped);
         }
 
         Group withChunks(List<LB> lbs) {
-            return new Group(dir, etype, count, flags, null, lbs, null, -1, -1, false);
+            return new Group(dir, etype, count, flags, null, lbs, null, null, -1, -1, false);
+        }
+
+        Group withXdir(XDir x) {
+            return new Group(dir, etype, count, flags, null, null, x, null, -1, -1, false);
         }
 
         boolean isRawChunked() {
@@ -192,7 +213,9 @@ public final class Adjacency {
 
     // ═══ 头 / 块编解码 ═══
 
+    /** 组写进头的 GFlags：分块组用维护着的 flags + 分块位（目录外置再加 bit3）；内联组按条目现算（删条目可能清掉某一位）。 */
     private static int groupFlags(Group g) {
+        if (g.xdir != null) return (g.flags & 3) | F_CHUNKED | F_XDIR;
         return g.chunks != null ? (g.flags & 3) | F_CHUNKED : flagsOf(g.entries);
     }
 
@@ -205,14 +228,15 @@ public final class Adjacency {
         for (int i = 0; i < n; i++) {
             Group g = groups.get(i);
             fs[i] = groupFlags(g);
-            size += 14 + (g.chunks != null ? 4 + 16L * g.chunks.size() : entriesSize(g.entries, fs[i]));
+            size += 14 + (g.xdir != null ? 5 : g.chunks != null ? 4 + 16L * g.chunks.size() : entriesSize(g.entries, fs[i]));
         }
         ByteBuffer bb = ByteBuffer.allocate(Math.toIntExact(size));
         bb.put((byte) 1).putShort((short) n);
         for (int i = 0; i < n; i++) {
             Group g = groups.get(i);
             bb.put((byte) g.dir).put((byte) fs[i]).putInt((int) g.etype).putLong(g.count);
-            if (g.chunks != null) {
+            if (g.xdir != null) bb.putInt((int) g.xdir.n).put((byte) g.xdir.levels);
+            else if (g.chunks != null) {
                 bb.putInt(g.chunks.size());
                 for (LB lb : g.chunks) bb.putLong(lb.o).putLong(lb.r);
             } else putEntries(bb, g.entries, fs[i]);
@@ -264,18 +288,25 @@ public final class Adjacency {
                 Want w = want == null ? Want.DECODE : want.want(d, t);
                 if (d < 0 || d > 1 || c <= 0 || gk <= prev) return null;
                 prev = gk;
-                if ((f & F_CHUNKED) == 0) {
+                if ((f & F_XDIR) != 0) {
+                    // 目录外置（布局 2）：头里只有块数与层数；任何解码方式都原样带上（只有 5 字节）
+                    if ((f & F_CHUNKED) == 0) return null;
+                    long nc = bb.getInt() & 0xFFFFFFFFL;
+                    int lv = bb.get() & 0xFF;
+                    if (nc <= 0 || lv <= 0) return null;
+                    acc.add(new Group(d, t, c, f & 3, null, null, new XDir(nc, lv), null, -1, -1, w == Want.SKIP));
+                } else if ((f & F_CHUNKED) == 0) {
                     if (c > bb.remaining() / 8) return null;
                     switch (w) {
                         case RAW -> {
                             int at = bb.position();
                             skipEntries(bb, c, f);
-                            acc.add(new Group(d, t, c, f, null, null, b, at, -1, false));
+                            acc.add(new Group(d, t, c, f, null, null, null, b, at, -1, false));
                         }
                         case DECODE -> acc.add(Group.inline(d, t, c, f, readEntries(bb, c, f)));
                         case SKIP -> {
                             skipEntries(bb, c, f);
-                            acc.add(new Group(d, t, c, f, null, null, null, -1, -1, true));
+                            acc.add(new Group(d, t, c, f, null, null, null, null, -1, -1, true));
                         }
                     }
                 } else {
@@ -290,8 +321,8 @@ public final class Adjacency {
                         int at = bb.position();
                         if (bb.getLong() != 0 || bb.getLong() != 0) return null;
                         bb.position(at + (int) (16 * nc));
-                        acc.add(w == Want.RAW ? new Group(d, t, c, f & 3, null, null, b, at, nc, false)
-                                : new Group(d, t, c, f & 3, null, null, null, -1, -1, true));
+                        acc.add(w == Want.RAW ? new Group(d, t, c, f & 3, null, null, null, b, at, nc, false)
+                                : new Group(d, t, c, f & 3, null, null, null, null, -1, -1, true));
                     }
                 }
             }
@@ -322,6 +353,66 @@ public final class Adjacency {
         } catch (BufferUnderflowException e) {
             return null;
         }
+    }
+
+    // ═══ 目录节点（布局 2）═══
+
+    /** 目录节点 ⇒ 值：&lt;&lt;1, Level:8, Count:16, &lt;&lt;Other:64, Rank:64&gt;&gt; × Count&gt;&gt;。 */
+    static byte[] encodeNode(int level, List<LB> lbs) {
+        int n = lbs.size();
+        ByteBuffer bb = ByteBuffer.allocate(4 + 16 * n);
+        bb.put((byte) 1).put((byte) level).putShort((short) n);
+        for (LB lb : lbs) bb.putLong(lb.o).putLong(lb.r);
+        return bb.array();
+    }
+
+    /** 下界表的字节视图（不解码，按下标取）：节点里的下界表、点查只在字节上二分（整节点解码曾让大号的点查慢 8 倍）。 */
+    static final class LbView extends java.util.AbstractList<LB> implements java.util.RandomAccess {
+        private final byte[] b;
+        private final int off, n;
+
+        LbView(byte[] b, int off, int n) {
+            this.b = b;
+            this.off = off;
+            this.n = n;
+        }
+
+        @Override
+        public LB get(int i) {
+            if (i < 0 || i >= n) throw new IndexOutOfBoundsException(i);
+            ByteBuffer bb = ByteBuffer.wrap(b);
+            int p = off + 16 * i;
+            return new LB(bb.getLong(p), bb.getLong(p + 8));
+        }
+
+        @Override
+        public int size() {
+            return n;
+        }
+    }
+
+    /** 解开的目录节点。 */
+    public record Node(int level, List<LB> lbs) {
+    }
+
+    /** 目录节点的值 ⇒ 层号 + 下界视图；长度不符、Count = 0、层号 0、下界不是严格升序 ⇒ null。 */
+    static Node nodeView(byte[] b) {
+        if (b == null || b.length < 4 || b[0] != 1) return null;
+        ByteBuffer bb = ByteBuffer.wrap(b);
+        int level = b[1] & 0xFF;
+        int n = bb.getShort(2) & 0xFFFF;
+        if (n <= 0 || level <= 0 || b.length != 4 + 16 * n) return null;
+        for (int i = 1; i < n; i++) {
+            int p = 4 + 16 * i;
+            if (cmp(bb.getLong(p - 16), bb.getLong(p - 8), bb.getLong(p), bb.getLong(p + 8)) >= 0) return null;
+        }
+        return new Node(level, new LbView(b, 4, n));
+    }
+
+    /** 目录节点的值 ⇒ 层号 + 下界表（拷贝）；畸形 ⇒ null（见 {@link #nodeView}）。 */
+    public static Node decodeNode(byte[] b) {
+        Node v = nodeView(b);
+        return v == null ? null : new Node(v.level, new ArrayList<>(v.lbs));
     }
 
     // ═══ 有序条目表 ═══
@@ -420,6 +511,11 @@ public final class Adjacency {
 
     // ═══ 顶点状态（写会话内可变；每次重试都新建）═══
 
+    /**
+     * 顶点状态。布局 2 的目录节点按键缓存在 {@code nodes}（键 ⇒ 下界表）；改过的进 {@code ndirty}，要删的进 {@code ndels}；
+     * 读到过、盘上确实有的块 / 节点进 {@code ondisk}（外置目录的组在头里没有块目录，删块时靠它判断盘上有没有）。
+     * 读不到某个节点：只可能是读头之后有人改过这个顶点 ⇒ 标 {@code stale}，提交时整批当冲突重来（不在过期的树上继续写）。
+     */
     static final class VertexState {
         final long vid;
         final Condition hcond;
@@ -430,7 +526,12 @@ public final class Adjacency {
         final TreeSet<String> dels = new TreeSet<>();
         final List<Group> orig;
         final List<BatchOp> extra = new ArrayList<>();
+        final Map<String, List<LB>> nodes = new HashMap<>();
+        final TreeSet<String> ndirty = new TreeSet<>();
+        final TreeSet<String> ndels = new TreeSet<>();
+        final Set<String> ondisk = new HashSet<>();
         boolean touched;
+        boolean stale;
         byte[] headBytes;
 
         VertexState(long vid, Condition hcond, boolean existed, List<Group> groups) {
@@ -460,6 +561,7 @@ public final class Adjacency {
         else {
             es = decodeChunk(bv);
             if (es == null) throw BitcaskException.of("bitcask/graph-chunk-malformed", k);
+            vs.ondisk.add(k);
         }
         vs.chunks.put(k, es);
         return es;
@@ -477,11 +579,195 @@ public final class Adjacency {
         vs.dels.add(k);
     }
 
+    // ═══ 目录树（布局 2）：会话内 ═══
+
+    private static String nodeKey(long vid, int dir, long etype, int level, LB lb) {
+        return GraphKeys.dirNodeKey(vid, dir, etype, level, lb.o, lb.r);
+    }
+
+    /** 读目录节点（缓存）⇒ 下界表；读不到 ⇒ 标过期、按 [(0,0)] 继续（这次计算不会被提交）。 */
+    private static List<LB> getNode(Bitcask db, VertexState vs, String k) {
+        List<LB> lbs = vs.nodes.get(k);
+        if (lbs != null) return lbs;
+        byte[] bv = db.get(k);
+        if (bv == null) {
+            vs.stale = true;
+            return List.of(LB0);
+        }
+        Node nv = nodeView(bv);
+        if (nv == null) throw BitcaskException.of("bitcask/graph-adjacency-malformed", k);
+        vs.nodes.put(k, nv.lbs);
+        vs.ondisk.add(k);
+        return nv.lbs;
+    }
+
+    private static void setNode(VertexState vs, String k, List<LB> lbs) {
+        vs.nodes.put(k, lbs);
+        vs.ndirty.add(k);
+        vs.ndels.remove(k);
+    }
+
+    private static void delNode(VertexState vs, String k) {
+        vs.nodes.remove(k);
+        vs.ndirty.remove(k);
+        vs.ndels.add(k);
+    }
+
+    /** 路径上的一步：层、节点下界、节点的下界表。 */
+    private record Step(int level, LB nlb, List<LB> lbs) {
+    }
+
+    /** 沿目录树走到 (o, r) 所在的块：路径（自根往下，最后一个是第 1 层）写进 path ⇒ 块下界。 */
+    private static LB xwalk(Bitcask db, VertexState vs, int dir, long etype, int levels, long o, long r, List<Step> path) {
+        LB nlb = LB0;
+        for (int level = levels; ; level--) {
+            List<LB> lbs = getNode(db, vs, nodeKey(vs.vid, dir, etype, level, nlb));
+            path.add(new Step(level, nlb, lbs));
+            LB c = locateLb(lbs, o, r);
+            if (level == 1) return c;
+            nlb = c;
+        }
+    }
+
+    /** 整棵树 ⇒ 全部块下界（有序）；全部节点键追加进 nkeys。 */
+    private static List<LB> xall(Bitcask db, VertexState vs, int dir, long etype, int levels, List<String> nkeys) {
+        List<LB> nlbs = List.of(LB0);
+        for (int level = levels; ; level--) {
+            List<LB> children = new ArrayList<>();
+            for (LB nlb : nlbs) {
+                String k = nodeKey(vs.vid, dir, etype, level, nlb);
+                children.addAll(getNode(db, vs, k));
+                nkeys.add(k);
+            }
+            if (level == 1) return children;
+            nlbs = children;
+        }
+    }
+
+    /** 下界表里按序插入（已在就不动）⇒ 新表。 */
+    private static List<LB> insLb(List<LB> lbs, LB lb) {
+        int lo = 0, hi = lbs.size() - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) >>> 1;
+            LB m = lbs.get(mid);
+            int c = cmp(m.o, m.r, lb.o, lb.r);
+            if (c < 0) lo = mid + 1;
+            else if (c > 0) hi = mid - 1;
+            else return lbs;
+        }
+        List<LB> n = new ArrayList<>(lbs.size() + 1);
+        n.addAll(lbs);
+        n.add(lo, lb);
+        return n;
+    }
+
+    /**
+     * 第 1 层节点（路径末尾）换成 lbs1，自底向上处理溢出（&gt; dirNodeMax 对半分裂、新节点下界登记进上一层；根分裂 ⇒ 长一层）⇒ 新层数。
+     */
+    private static int xputPath(VertexState vs, int dir, long etype, int levels, List<Step> path, List<LB> lbs1, GraphConfig cfg) {
+        long vid = vs.vid;
+        List<LB> lbs = lbs1;
+        for (int i = path.size() - 1; ; i--) {
+            Step st = path.get(i);
+            String k = nodeKey(vid, dir, etype, st.level, st.nlb);
+            if (lbs.size() <= cfg.dirNodeMax()) {
+                setNode(vs, k, lbs);
+                return levels;
+            }
+            int half = (lbs.size() + 1) / 2;
+            List<LB> left = new ArrayList<>(lbs.subList(0, half)), right = new ArrayList<>(lbs.subList(half, lbs.size()));
+            LB rlb = right.getFirst();
+            setNode(vs, k, left);
+            setNode(vs, nodeKey(vid, dir, etype, st.level, rlb), right);
+            if (i == 0) {
+                // 根分裂：新根在上一层，下界 (0,0)
+                setNode(vs, nodeKey(vid, dir, etype, st.level + 1, LB0), List.of(LB0, rlb));
+                return levels + 1;
+            }
+            Step up = path.get(i - 1);
+            List<LB> plbs = vs.nodes.getOrDefault(nodeKey(vid, dir, etype, st.level + 1, up.nlb), up.lbs);
+            lbs = insLb(plbs, rlb);
+        }
+    }
+
+    /** 全部块下界 ⇒ 新建一棵树（节点装满到 dirNodeMax）⇒ 层数。 */
+    private static int xbuild(VertexState vs, int dir, long etype, List<LB> lbs, GraphConfig cfg) {
+        int m = (int) cfg.dirNodeMax();
+        List<LB> cur = lbs;
+        for (int level = 1; ; level++) {
+            List<LB> firsts = new ArrayList<>();
+            for (int i = 0; i < cur.size(); i += m) {
+                List<LB> part = new ArrayList<>(cur.subList(i, Math.min(cur.size(), i + m)));
+                setNode(vs, nodeKey(vs.vid, dir, etype, level, part.getFirst()), part);
+                firsts.add(part.getFirst());
+            }
+            if (firsts.size() == 1) return level;
+            cur = firsts;
+        }
+    }
+
+    /**
+     * 路径第 i 个节点里的子项 old 改名为 neu（old 是被改名的子节点的旧下界）；old 恰好是这个节点的首项（= 节点自己的下界）
+     * ⇒ 这个节点也要改名，继续往上改。根的下界恒为 (0,0)，不会被改名。
+     */
+    private static void xrelabel(VertexState vs, int dir, long etype, List<Step> path, int i, LB old, LB neu) {
+        Step st = path.get(i);
+        String k = nodeKey(vs.vid, dir, etype, st.level, st.nlb);
+        List<LB> cur = vs.nodes.get(k);
+        List<LB> lbs = new ArrayList<>(cur == null ? 0 : cur.size());
+        if (cur != null) for (LB x : cur) lbs.add(x.equals(old) ? neu : x);
+        if (st.nlb.equals(old)) {
+            delNode(vs, k);
+            setNode(vs, nodeKey(vs.vid, dir, etype, st.level, neu), lbs);
+            xrelabel(vs, dir, etype, path, i - 1, old, neu);
+        } else setNode(vs, k, lbs);
+    }
+
+    /**
+     * 从路径第 i 个节点里摘掉子项 x：摘空了 ⇒ 删这个节点，再从上一层摘掉它（最左一路的下界是 (0,0)、首项 (0,0) 的块从不删，所以摘不到根）；
+     * x 是首项 ⇒ 节点改名为新的首项（上一层跟着改，必要时继续往上）；否则就地改。
+     * 删到节点首块时改名而不是留空块撑着：大量删边后空块会撑着树、目录转不回内联。
+     */
+    private static void xremove(VertexState vs, int dir, long etype, List<Step> path, int i, LB x) {
+        Step st = path.get(i);
+        String k = nodeKey(vs.vid, dir, etype, st.level, st.nlb);
+        List<LB> lbs = new ArrayList<>();
+        List<LB> cur = vs.nodes.get(k);
+        if (cur != null) for (LB y : cur) if (!y.equals(x)) lbs.add(y);
+        if (lbs.isEmpty()) {
+            delNode(vs, k);
+            xremove(vs, dir, etype, path, i - 1, st.nlb);
+        } else if (x.equals(st.nlb)) {
+            LB nl = lbs.getFirst();
+            delNode(vs, k);
+            setNode(vs, nodeKey(vs.vid, dir, etype, st.level, nl), lbs);
+            xrelabel(vs, dir, etype, path, i - 1, st.nlb, nl);
+        } else setNode(vs, k, lbs);
+    }
+
+    /** 目录外置的组整组删空：删全部块与全部目录节点。块按「目录 = 实际块」的不变式视为盘上已有。 */
+    private static void xteardown(Bitcask db, VertexState vs, int dir, long etype, int levels) {
+        List<String> nkeys = new ArrayList<>();
+        List<LB> lbs = xall(db, vs, dir, etype, levels, nkeys);
+        for (LB lb : lbs) {
+            String k = chunkKey(vs.vid, dir, etype, lb);
+            vs.ondisk.add(k);
+            delChunk(vs, k);
+        }
+        for (String k : nkeys) delNode(vs, k);
+    }
+
+    /** 分块组里 (o, r) 所在块的下界（目录内联：头里二分；外置：沿树走）。 */
+    private static LB leafLb(Bitcask db, VertexState vs, int dir, long etype, Group g, long o, long r) {
+        if (g.xdir != null) return xwalk(db, vs, dir, etype, g.xdir.levels, o, r, new ArrayList<>());
+        return locateLb(g.chunks, o, r);
+    }
+
     private static byte[] getEntry(Bitcask db, VertexState vs, int dir, long etype, long o, long r) {
         Group g = findGroup(vs.groups, dir, etype);
         if (g == null) return null;
         if (g.entries != null) return entFind(g.entries, o, r);
-        return entFind(getChunk(db, vs, chunkKey(vs.vid, dir, etype, locateLb(g.chunks, o, r))), o, r);
+        return entFind(getChunk(db, vs, chunkKey(vs.vid, dir, etype, leafLb(db, vs, dir, etype, g, o, r))), o, r);
     }
 
     @SuppressWarnings("unchecked")
@@ -500,7 +786,7 @@ public final class Adjacency {
             vs.touched = true;
             return old;
         }
-        String k = chunkKey(vs.vid, dir, etype, locateLb(g.chunks, o, r));
+        String k = chunkKey(vs.vid, dir, etype, leafLb(db, vs, dir, etype, g, o, r));
         List<AdjEntry> es = getChunk(db, vs, k);
         byte[] old = entPut(es, e, out);
         storeGroup(vs.groups, g.withCount(g.count + (old != null ? 0 : 1), g.flags | flagsOf(List.of(e))));
@@ -523,7 +809,7 @@ public final class Adjacency {
             vs.touched = true;
             return old;
         }
-        String k = chunkKey(vs.vid, dir, etype, locateLb(g.chunks, o, r));
+        String k = chunkKey(vs.vid, dir, etype, leafLb(db, vs, dir, etype, g, o, r));
         List<AdjEntry> es = getChunk(db, vs, k);
         byte[] old = entDel(es, o, r, out);
         if (old == null) return null;
@@ -541,18 +827,21 @@ public final class Adjacency {
 
     /** 按组序读条目，直到不同的对端顶点数 &gt; maxOthers 或读完（maxOthers &lt; 0 = 全部；对端不计自己）。done[0] = 读完。 */
     private static List<FullEntry> vertexFirstEntries(Bitcask db, VertexState vs, long maxOthers, boolean[] done) {
+        // 外置目录的组先把块下界列出来（同 clj：在逐块读之前整树走一遍）
+        Map<Group, List<LB>> lbsOf = new HashMap<>();
+        for (Group g : List.copyOf(vs.groups))
+            if (g.xdir != null) lbsOf.put(g, xall(db, vs, g.dir, g.etype, g.xdir.levels, new ArrayList<>()));
         Set<Long> seen = new HashSet<>();
         List<FullEntry> acc = new ArrayList<>();
         for (Group g : List.copyOf(vs.groups)) {
-            List<List<AdjEntry>> units = new ArrayList<>();
-            if (g.entries != null) units.add(g.entries);
-            int nUnits = g.entries != null ? 1 : g.chunks.size();
+            List<LB> lbs = g.entries != null ? null : g.chunks != null ? g.chunks : lbsOf.get(g);
+            int nUnits = g.entries != null ? 1 : lbs.size();
             for (int u = 0; u < nUnits; u++) {
                 if (maxOthers >= 0 && seen.size() > maxOthers) {
                     done[0] = false;
                     return acc;
                 }
-                List<AdjEntry> es = g.entries != null ? g.entries : getChunk(db, vs, chunkKey(vs.vid, g.dir, g.etype, g.chunks.get(u)));
+                List<AdjEntry> es = g.entries != null ? g.entries : getChunk(db, vs, chunkKey(vs.vid, g.dir, g.etype, lbs.get(u)));
                 for (AdjEntry e : es) {
                     if (e.other != vs.vid) seen.add(e.other);
                     acc.add(new FullEntry(g.dir, g.etype, e.other, e.rank, e.props));
@@ -565,7 +854,7 @@ public final class Adjacency {
 
     // ═══ 收尾：分块维护 + 生成 op ═══
 
-    /** 超大组的块上限放宽到 组字节 / 1024，让块目录保持在约 1024 项内。 */
+    /** 布局 1：超大组的块上限放宽到 组字节 / 1024，让块目录保持在约 1024 项内。 */
     private static long effChunkMax(long cnt, GraphConfig cfg) {
         return Math.max(cfg.chunkMax(), (8 * cnt) / 1024);
     }
@@ -598,15 +887,63 @@ public final class Adjacency {
         return splitEntries(es, size / n + 1);
     }
 
-    private static void normalizeGroup(VertexState vs, Group g, GraphConfig cfg, Set<LB> dlbs) {
+    /**
+     * 布局 2 每块条数的有效上限：chunkEntries；组大到「块数安全阀 × 七成满」以上时随组放大（安全阀 0 = 不限）。
+     * 缺省 65536 块：约 2300 万条以内不起作用，1 亿条时约 1500 条 / 块，目录最多三层。
+     */
+    private static long effEntries(long cnt, GraphConfig cfg) {
+        long e = cfg.chunkEntries(), m = cfg.chunkCountMax();
+        return m > 0 ? Math.max(e, (long) Math.ceil((double) cnt / (0.7 * (double) m))) : e;
+    }
+
+    /** 按条数与字节贪心切片（块头 6 B）：加上下一条会超过 maxe 条或 maxb 字节就切；每片至少一条。 */
+    private static List<List<AdjEntry>> splitBy(List<AdjEntry> es, long maxe, long maxb) {
+        int f = flagsOf(es);
+        List<List<AdjEntry>> acc = new ArrayList<>();
+        List<AdjEntry> cur = new ArrayList<>();
+        long sz = 6;
+        for (AdjEntry e : es) {
+            long esz = entrySize(e, f);
+            if (!cur.isEmpty() && (cur.size() >= maxe || sz + esz > maxb)) {
+                acc.add(cur);
+                cur = new ArrayList<>();
+                sz = 6;
+            }
+            cur.add(e);
+            sz += esz;
+        }
+        acc.add(cur);
+        return acc;
+    }
+
+    /** 已有块超限就切（布局 1：按字节、超大组放宽；布局 2：条数 / 字节两个上限取先到的，切成约等大的 n 片）；没超 ⇒ [es]。 */
+    private static List<List<AdjEntry>> splitChunk(List<AdjEntry> es, long cnt, GraphConfig cfg) {
+        if (!cfg.layout2()) return splitBalanced(es, effChunkMax(cnt, cfg));
+        long e = effEntries(cnt, cfg), b = cfg.chunkMax();
+        long n = es.size(), size = 6 + bodySize(es);
+        if (n <= e && size <= b) return List.of(es);
+        long k = Math.max(2, Math.max((n + e - 1) / e, (size + b - 1) / b));
+        return splitBy(es, (n + k - 1) / k, Math.max(b, 0));
+    }
+
+    /** 内联组转分块时的切片：布局 1 按字节装满；布局 2 按条数 / 字节装满。 */
+    private static List<List<AdjEntry>> splitInitial(List<AdjEntry> es, long cnt, GraphConfig cfg) {
+        return cfg.layout2() ? splitBy(es, effEntries(cnt, cfg), cfg.chunkMax()) : splitEntries(es, effChunkMax(cnt, cfg));
+    }
+
+    /**
+     * 一个分块组的收尾：只处理本组改过的块（dlbs）——空块（非块 0）删掉、超限的切片；块目录只在有块被删 / 新增时改：
+     * 内联目录重建，外置目录在树上逐个摘除 / 登记（节点溢出向上分裂），根只剩一个子节点 ⇒ 降一层。
+     */
+    private static void normalizeGroup(Bitcask db, VertexState vs, Group g, GraphConfig cfg, Set<LB> dlbs) {
         long vid = vs.vid;
         if (g.count == 0) {
-            for (LB lb : g.chunks) delChunk(vs, chunkKey(vid, g.dir, g.etype, lb));
+            if (g.xdir != null) xteardown(db, vs, g.dir, g.etype, g.xdir.levels);
+            else for (LB lb : g.chunks) delChunk(vs, chunkKey(vid, g.dir, g.etype, lb));
             dropGroup(vs.groups, g.dir, g.etype);
             return;
         }
         if (dlbs == null || dlbs.isEmpty()) return;
-        long mx = effChunkMax(g.count, cfg);
         Set<LB> removed = new HashSet<>();
         Map<LB, List<LB>> extra = new HashMap<>();
         for (LB lb : dlbs) {
@@ -616,7 +953,7 @@ public final class Adjacency {
                 delChunk(vs, k);
                 removed.add(lb);
             } else {
-                List<List<AdjEntry>> pieces = splitBalanced(es, mx);
+                List<List<AdjEntry>> pieces = splitChunk(es, g.count, cfg);
                 setChunk(vs, k, pieces.getFirst());
                 if (pieces.size() > 1) {
                     List<LB> more = new ArrayList<>();
@@ -630,45 +967,95 @@ public final class Adjacency {
             }
         }
         if (removed.isEmpty() && extra.isEmpty()) return;
-        Group cur = findGroup(vs.groups, g.dir, g.etype);
+        if (g.xdir != null) {
+            int levels = g.xdir.levels;
+            // 摘除删掉的块（节点摘空就删、摘到首项就改名，见 xremove）
+            List<LB> rs = new ArrayList<>(removed);
+            rs.sort(LB_ORDER);
+            for (LB lb : rs) {
+                List<Step> path = new ArrayList<>();
+                xwalk(db, vs, g.dir, g.etype, levels, lb.o, lb.r, path);
+                xremove(vs, g.dir, g.etype, path, path.size() - 1, lb);
+            }
+            // 登记新块：逐个沿树找到所在的第 1 层节点插进去，溢出就向上分裂
+            List<LB> adds = new ArrayList<>();
+            for (List<LB> more : extra.values()) adds.addAll(more);
+            adds.sort(LB_ORDER);
+            for (LB nl : adds) {
+                List<Step> path = new ArrayList<>();
+                xwalk(db, vs, g.dir, g.etype, levels, nl.o, nl.r, path);
+                levels = xputPath(vs, g.dir, g.etype, levels, path, insLb(path.getLast().lbs, nl), cfg);
+            }
+            long n = g.xdir.n + adds.size() - removed.size();
+            // 树变矮：根只剩一个子节点（必是 (0,0) 那个）⇒ 删根、层数减一
+            while (true) {
+                String rk = nodeKey(vid, g.dir, g.etype, levels, LB0);
+                List<LB> rl = getNode(db, vs, rk);
+                if (levels > 1 && rl.size() == 1) {
+                    delNode(vs, rk);
+                    levels--;
+                } else break;
+            }
+            storeGroup(vs.groups, g.withXdir(new XDir(n, levels)));
+            return;
+        }
         List<LB> lbs = new ArrayList<>();
         for (LB lb : g.chunks) {
             if (!removed.contains(lb)) lbs.add(lb);
             if (extra.containsKey(lb)) lbs.addAll(extra.get(lb));
         }
-        storeGroup(vs.groups, new Group(cur.dir, cur.etype, cur.count, cur.flags, null, lbs, null, -1, -1, false));
+        storeGroup(vs.groups, g.withChunks(lbs));
     }
 
-    private static void normalizeChunked(VertexState vs, GraphConfig cfg) {
+    private static void normalizeChunked(Bitcask db, VertexState vs, GraphConfig cfg) {
         Map<Long, Set<LB>> d = new HashMap<>();
         for (String k : vs.dirty) {
             GraphKeys.ChunkKey ck = GraphKeys.parseChunk(k);
             d.computeIfAbsent(((long) ck.dir() << 32) | ck.etype(), x -> new LinkedHashSet<>()).add(new LB(ck.other(), ck.rank()));
         }
         for (Group g : List.copyOf(vs.groups)) {
-            if (g.chunks != null) {
-                Group cur = findGroup(vs.groups, g.dir, g.etype);
-                normalizeGroup(vs, cur, cfg, d.get(((long) g.dir << 32) | g.etype));
+            if (g.chunks != null || g.xdir != null) normalizeGroup(db, vs, g, cfg, d.get(((long) g.dir << 32) | g.etype));
+        }
+    }
+
+    /** 布局 2：内联目录的块数超过 dirInlineMax ⇒ 外置成树；外置目录的块数降到 dirInlineMax / 2 以下 ⇒ 转回内联（滞回）。 */
+    private static void xrebalance(Bitcask db, VertexState vs, GraphConfig cfg) {
+        if (!cfg.layout2()) return;
+        for (Group g : List.copyOf(vs.groups)) {
+            if (g.chunks != null && g.chunks.size() > cfg.dirInlineMax()) {
+                int levels = xbuild(vs, g.dir, g.etype, g.chunks, cfg);
+                vs.headBytes = null;
+                storeGroup(vs.groups, g.withXdir(new XDir(g.chunks.size(), levels)));
+            } else if (g.xdir != null && g.xdir.n < cfg.dirInlineMax() / 2) {
+                List<String> nkeys = new ArrayList<>();
+                List<LB> lbs = xall(db, vs, g.dir, g.etype, g.xdir.levels, nkeys);
+                for (String k : nkeys) delNode(vs, k);
+                vs.headBytes = null;
+                storeGroup(vs.groups, g.withChunks(lbs));
             }
         }
     }
 
-    /** 分块组缩到 inlineMax / 4 以下 ⇒ 转回内联（滞回：分块门是头 &gt; inlineMax）。 */
+    /** 分块组缩到 inlineMax / 4 以下 ⇒ 转回内联（滞回：分块门是头 &gt; inlineMax）。外置目录的组连同全部目录节点一起删。 */
     private static void unchunkSmall(Bitcask db, VertexState vs, GraphConfig cfg) {
         long thresh = cfg.inlineMax() / 4;
         for (Group g : List.copyOf(vs.groups)) {
-            if (g.chunks == null) continue;
+            if (g.chunks == null && g.xdir == null) continue;
             long minW = 8 + ((g.flags & F_RANK) == 0 ? 0 : 8) + ((g.flags & F_PROPS) == 0 ? 0 : 2);
             if (g.count * minW >= thresh) continue;
-            List<AdjEntry> es = loadGroupChunks(db, vs, g.dir, g.etype, g.chunks);
+            List<String> nkeys = new ArrayList<>();
+            List<LB> lbs = g.xdir != null ? xall(db, vs, g.dir, g.etype, g.xdir.levels, nkeys) : g.chunks;
+            List<AdjEntry> es = loadGroupChunks(db, vs, g.dir, g.etype, lbs);
             if (bodySize(es) >= thresh) continue;
-            for (LB lb : g.chunks) delChunk(vs, chunkKey(vs.vid, g.dir, g.etype, lb));
+            for (LB lb : lbs) delChunk(vs, chunkKey(vs.vid, g.dir, g.etype, lb));
+            for (String k : nkeys) delNode(vs, k);
+            vs.headBytes = null;
             storeGroup(vs.groups, Group.inline(g.dir, g.etype, g.count, 0, es));
         }
     }
 
     private static void chunkify(VertexState vs, Group g, GraphConfig cfg) {
-        List<List<AdjEntry>> pieces = splitEntries(g.entries, effChunkMax(g.count, cfg));
+        List<List<AdjEntry>> pieces = splitInitial(g.entries, g.count, cfg);
         setChunk(vs, chunkKey(vs.vid, g.dir, g.etype, LB0), pieces.getFirst());
         List<LB> lbs = new ArrayList<>();
         lbs.add(LB0);
@@ -706,18 +1093,25 @@ public final class Adjacency {
         }
     }
 
+    /** 头 op（带条件）+ 块删除（只删读到时盘上已有的块）+ 块写入 + 目录节点删除 / 写入 + p 家族 op。 */
     private static List<BatchOp> emitOps(VertexState vs) {
         List<BatchOp> ops = new ArrayList<>();
         byte[] hk = GraphKeys.ascii(GraphKeys.head(vs.vid));
         if (!vs.groups.isEmpty()) ops.add(BatchOp.put(hk, vs.headBytes != null ? vs.headBytes : encodeHead(vs.groups), vs.hcond));
         else if (vs.existed) ops.add(BatchOp.delete(hk, vs.hcond));
         for (String k : vs.dels) {
-            GraphKeys.ChunkKey ck = GraphKeys.parseChunk(k);
-            Group g = findGroup(vs.orig, ck.dir(), ck.etype());
-            LB lb = new LB(ck.other(), ck.rank());
-            if (g != null && g.chunks != null && lb.equals(locateLb(g.chunks, lb.o, lb.r))) ops.add(BatchOp.delete(GraphKeys.ascii(k)));
+            boolean onDisk = vs.ondisk.contains(k);
+            if (!onDisk) {
+                GraphKeys.ChunkKey ck = GraphKeys.parseChunk(k);
+                Group g = findGroup(vs.orig, ck.dir(), ck.etype());
+                LB lb = new LB(ck.other(), ck.rank());
+                onDisk = g != null && g.chunks != null && lb.equals(locateLb(g.chunks, lb.o, lb.r));
+            }
+            if (onDisk) ops.add(BatchOp.delete(GraphKeys.ascii(k)));
         }
         for (String k : vs.dirty) ops.add(BatchOp.put(GraphKeys.ascii(k), encodeChunk(vs.chunks.get(k))));
+        for (String k : vs.ndels) if (vs.ondisk.contains(k)) ops.add(BatchOp.delete(GraphKeys.ascii(k)));
+        for (String k : vs.ndirty) ops.add(BatchOp.put(GraphKeys.ascii(k), encodeNode(GraphKeys.parseDirNode(k).level(), vs.nodes.get(k))));
         ops.addAll(vs.extra);
         return ops;
     }
@@ -725,9 +1119,11 @@ public final class Adjacency {
     private static List<BatchOp> finalizeVertex(Bitcask db, VertexState vs, GraphConfig cfg) {
         if (!vs.touched) return List.of();
         if (vs.groups.size() > 0xFFFF) throw BitcaskException.of("bitcask/graph-too-many-groups", vs.groups.size());
-        normalizeChunked(vs, cfg);
+        normalizeChunked(db, vs, cfg);
         unchunkSmall(db, vs, cfg);
+        xrebalance(db, vs, cfg);
         chunkOversized(vs, cfg);
+        xrebalance(db, vs, cfg);
         return emitOps(vs);
     }
 
@@ -748,6 +1144,75 @@ public final class Adjacency {
             }
         }
         return acc;
+    }
+
+    /** 只读路径读一个目录节点 ⇒ 下界视图；不存在 ⇒ null（弱一致读：读头之后有人改过这个顶点）；畸形 ⇒ {@code bitcask/graph-adjacency-malformed}。 */
+    private static List<LB> readNodeLbs(Bitcask db, long vid, int dir, long etype, int level, LB lb) {
+        String k = nodeKey(vid, dir, etype, level, lb);
+        byte[] bv = db.get(k);
+        if (bv == null) return null;
+        Node nv = nodeView(bv);
+        if (nv == null) throw BitcaskException.of("bitcask/graph-adjacency-malformed", k);
+        return nv.lbs;
+    }
+
+    /** 目录外置的组的全部块下界（惰性、按序）：自根深度优先，只读到用到的节点为止（取前 N 条时只走最左一路）。 */
+    public static java.util.Iterator<LB> xleafIter(Bitcask db, long vid, int dir, long etype, int levels) {
+        return new java.util.Iterator<>() {
+            private final java.util.ArrayDeque<Object[]> stack = new java.util.ArrayDeque<>(); // [level, lbs, int[]{i}]
+            private boolean started;
+            private LB next;
+
+            private void advance() {
+                if (!started) {
+                    started = true;
+                    List<LB> root = readNodeLbs(db, vid, dir, etype, levels, LB0);
+                    stack.push(new Object[]{levels, root == null ? List.of() : root, new int[]{0}});
+                }
+                while (next == null && !stack.isEmpty()) {
+                    Object[] top = stack.peek();
+                    int level = (Integer) top[0];
+                    @SuppressWarnings("unchecked") List<LB> lbs = (List<LB>) top[1];
+                    int[] i = (int[]) top[2];
+                    if (i[0] >= lbs.size()) {
+                        stack.pop();
+                        continue;
+                    }
+                    LB x = lbs.get(i[0]++);
+                    if (level == 1) next = x;
+                    else {
+                        List<LB> sub = readNodeLbs(db, vid, dir, etype, level - 1, x);
+                        stack.push(new Object[]{level - 1, sub == null ? List.of() : sub, new int[]{0}});
+                    }
+                }
+            }
+
+            @Override
+            public boolean hasNext() {
+                advance();
+                return next != null;
+            }
+
+            @Override
+            public LB next() {
+                advance();
+                if (next == null) throw new java.util.NoSuchElementException();
+                LB x = next;
+                next = null;
+                return x;
+            }
+        };
+    }
+
+    /** 目录外置的组里 (o, r) 所在块的下界（逐层点读）；中途缺节点 ⇒ null。 */
+    private static LB xlocate(Bitcask db, long vid, int dir, long etype, int levels, long o, long r) {
+        LB lb = LB0;
+        for (int level = levels; ; level--) {
+            List<LB> lbs = readNodeLbs(db, vid, dir, etype, level, lb);
+            if (lbs == null) return null;
+            lb = locateLb(lbs, o, r);
+            if (level == 1) return lb;
+        }
     }
 
     /** 只读路径的组过滤：dir null = 两个方向，etype null = 全部类型（etype 须已过 u32）。 */
@@ -790,7 +1255,10 @@ public final class Adjacency {
                 long c = bb.getLong();
                 long gk = ((long) d << 32) | t;
                 if (d < 0 || d > 1 || c <= 0 || gk <= prev) return false;
-                if ((f & F_CHUNKED) == 0) {
+                if ((f & F_XDIR) != 0) {
+                    if ((f & F_CHUNKED) == 0) return false;
+                    if ((bb.getInt() & 0xFFFFFFFFL) <= 0 || (bb.get() & 0xFF) <= 0) return false;
+                } else if ((f & F_CHUNKED) == 0) {
                     if (c > bb.remaining() / 8) return false;
                     skipEntries(bb, c, f);
                 } else {
@@ -855,7 +1323,16 @@ public final class Adjacency {
             if (limit >= 0 && acc.size() >= limit) break;
             if (g.dir != dir || (et != null && et != g.etype)) continue;
             long left = limit >= 0 ? limit - acc.size() : -1;
-            if (g.isRawChunked()) {
+            if (g.xdir != null) {
+                for (var it = xleafIter(db, vid, dir, g.etype, g.xdir.levels); it.hasNext() && !(limit >= 0 && acc.size() >= limit); ) {
+                    String k = chunkKey(vid, dir, g.etype, it.next());
+                    byte[] bv = db.get(k);
+                    if (bv != null) {
+                        int[] fc = chunkArea(k, bv);
+                        areaRows(bv, 6, fc[1] & 0xFFFFFFFFL, fc[0], g.etype, mk, acc, limit >= 0 ? limit - acc.size() : -1);
+                    }
+                }
+            } else if (g.isRawChunked()) {
                 for (long i = 0; i < g.nchunks && !(limit >= 0 && acc.size() >= limit); i++) {
                     String k = chunkKey(vid, dir, g.etype, rawLb(g, i));
                     byte[] bv = db.get(k);
@@ -942,6 +1419,15 @@ public final class Adjacency {
         long et = u32(etype);
         Group g = findGroup(headGroups(db, vid, rawFn(dir, et)), dir, et);
         if (g == null) return null;
+        if (g.xdir != null) {
+            LB lb = xlocate(db, vid, dir, et, g.xdir.levels, o, r);
+            if (lb == null) return null;
+            String k = chunkKey(vid, dir, et, lb);
+            byte[] bv = db.get(k);
+            if (bv == null) return null;
+            int[] fc = chunkArea(k, bv);
+            return areaFind(bv, 6, fc[1] & 0xFFFFFFFFL, fc[0], o, r);
+        }
         if (g.isRawChunked()) {
             String k = chunkKey(vid, dir, et, rawLocateLb(g, o, r));
             byte[] bv = db.get(k);
@@ -983,7 +1469,16 @@ public final class Adjacency {
         for (Group g : groups) {
             if (g.dir != dir || (et != null && et != g.etype)) continue;
             long[] st = new long[2];
-            if (g.isRawChunked()) {
+            if (g.xdir != null) {
+                for (var it = xleafIter(db, vid, g.dir, g.etype, g.xdir.levels); it.hasNext(); ) {
+                    String k = chunkKey(vid, g.dir, g.etype, it.next());
+                    byte[] bv = db.get(k);
+                    if (bv != null) {
+                        int[] fc = chunkArea(k, bv);
+                        areaIds(bv, 6, fc[1] & 0xFFFFFFFFL, fc[0], sink, dedupe, st);
+                    }
+                }
+            } else if (g.isRawChunked()) {
                 for (long i = 0; i < g.nchunks; i++) {
                     String k = chunkKey(vid, g.dir, g.etype, rawLb(g, i));
                     byte[] bv = db.get(k);
@@ -1116,11 +1611,73 @@ public final class Adjacency {
             return ops;
         }
 
+        /** 会话读目录树时遇到过缺失的节点（读头之后有人改过这个顶点）：这时算出来的 op 不能提交，按冲突重来。 */
+        public boolean stale() {
+            for (VertexState v : vs.values()) if (v.stale) return true;
+            return false;
+        }
+
+        /** 提交 ⇒ OK | CONFLICT（有人先改了某个头，或读到一半的目录树已被别人改过）| NOOP。 */
         Commit commit(List<BatchOp> extraOps) {
+            if (stale()) return Commit.CONFLICT;
             List<BatchOp> ops = commitOps(extraOps);
             if (ops == null) return Commit.NOOP;
             return db.tryWriteAtomic(ops).isConflict() ? Commit.CONFLICT : Commit.OK;
         }
+    }
+
+    // ═══ 目录树校验（checkInvariants 用）═══
+
+    /** 一棵目录树的核对结果：块下界、走到的节点键、问题。 */
+    record XdirCheck(List<LB> lbs, Set<String> nodes, List<List<Object>> problems) {
+    }
+
+    /**
+     * 逐个节点核对一棵目录树：节点读得到、解得开、层号与键一致、首项 = 节点下界、下界严格升序（跨节点也是）、第 1 层的项数之和 = 头里记的块数 n。
+     */
+    static XdirCheck xdirCheck(Bitcask db, long vid, int dir, long etype, int levels, long n) {
+        List<List<Object>> problems = new ArrayList<>();
+        Set<String> nodes = new HashSet<>();
+        List<LB> nlbs = List.of(LB0);
+        List<LB> lbs;
+        for (int level = levels; ; level--) {
+            List<LB> children = new ArrayList<>();
+            for (LB nlb : nlbs) {
+                String k = nodeKey(vid, dir, etype, level, nlb);
+                byte[] bv = db.get(k);
+                Node nd = bv == null ? null : decodeNode(bv);
+                nodes.add(k);
+                List<Object> where = List.of(vid, dir, etype, level, List.of(nlb.o, nlb.r));
+                if (bv == null) problems.add(cat("missing-dir-node", where));
+                else if (nd == null) problems.add(cat("bad-dir-node", where));
+                else {
+                    if (nd.level != level) problems.add(cat("dir-node-level", where, nd.level));
+                    else if (!nlb.equals(nd.lbs.getFirst())) problems.add(cat("dir-node-bound", where));
+                    children.addAll(nd.lbs);
+                }
+            }
+            if (level == 1) {
+                lbs = children;
+                break;
+            }
+            nlbs = children;
+        }
+        for (int i = 1; i < lbs.size(); i++) {
+            if (LB_ORDER.compare(lbs.get(i - 1), lbs.get(i)) >= 0) {
+                problems.add(List.of("dir-order", vid, dir, etype));
+                break;
+            }
+        }
+        if (n != lbs.size()) problems.add(List.of("dir-chunk-count", vid, dir, etype, n, (long) lbs.size()));
+        return new XdirCheck(lbs, nodes, problems);
+    }
+
+    private static List<Object> cat(String tag, List<Object> where, Object... more) {
+        List<Object> p = new ArrayList<>();
+        p.add(tag);
+        p.addAll(where);
+        p.addAll(Arrays.asList(more));
+        return p;
     }
 
     // ═══ 迁移用 ═══

@@ -156,7 +156,7 @@ class GraphV1Test {
         List<Object[]> out = new ArrayList<>();
         for (long t = 0; t < 65536; t++) out.add(new Object[]{t, 2L, 0L, E0});
         assertEquals("bitcask/graph-too-many-groups",
-                code(() -> Adjacency.buildVertex(1, out, List.of(), new GraphConfig(1L << 30, 4096, 128))));
+                code(() -> Adjacency.buildVertex(1, out, List.of(), new GraphConfig(2, 1L << 30, 65536, 128, 512, 65536, 16, 256))));
     }
 
     // ═══ key 数 / 大属性 / 自环 ═══

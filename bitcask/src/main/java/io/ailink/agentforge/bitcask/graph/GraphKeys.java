@@ -15,13 +15,14 @@ import io.ailink.agentforge.bitcask.BitcaskException;
  * a  vid:16                              邻接表头
  * a  vid:16 dir:2 etype:8 other:16 rank:16   hub 的分块（(other, rank) 是块下界；dir 00 出 / 01 入）
  * p  src:16 etype:8 dst:16 rank:16       超过内联上限的边属性
- * g                                      图元信息（布局 1 + 分块参数）
+ * g                                      图元信息（布局 1 / 2 + 分块参数）
  * t  etype:8                             etype 名字
  * tn len:4 name-utf8                     名字 ⇒ etype id（值 = u32 大端）
  * l  len:4 label-utf8 vid:16             标签索引项（值为空）
  * c                                      顶点 id 高水位（值 = 9 字节大端）
  * m  len:4 label-utf8                    Cypher MERGE 守卫（值 = u64 大端版本号）
  * r  src:16 etype:8 dst:16               删边 rank 下限（值 u64）
+ * d  vid:16 dir:2 etype:8 level:2 other:16 rank:16   布局 2 的目录节点（keelson D-51；值 = 子节点下界表，见 Adjacency）
  * </pre>
  */
 public final class GraphKeys {
@@ -89,6 +90,22 @@ public final class GraphKeys {
         hex(sb, vid, 16);
         hex(sb, dir, 2);
         hex(sb, u32(etype), 8);
+        hex(sb, other, 16);
+        hex(sb, rank, 16);
+        return sb.toString();
+    }
+
+    /**
+     * 布局 2 的目录节点键（65 格）：前缀 + d + vid + dir(2) + etype(8) + 层(2) + 下界 other(16) rank(16)。
+     * 第 1 层节点的子节点是块，第 k 层的是第 k−1 层的节点；每层最左的节点下界恒为 (0, 0)，根 = (层数, (0, 0))。
+     * 放进新家族 d 而不挂在 a 下：a vid 的前缀 range 仍恰好是「头 + 全部块」。
+     */
+    public static String dirNodeKey(long vid, int dir, long etype, int level, long other, long rank) {
+        StringBuilder sb = new StringBuilder(65).append(NS).append('d');
+        hex(sb, vid, 16);
+        hex(sb, dir, 2);
+        hex(sb, u32(etype), 8);
+        hex(sb, level, 2);
         hex(sb, other, 16);
         hex(sb, rank, 16);
         return sb.toString();
@@ -212,6 +229,24 @@ public final class GraphKeys {
 
     public static ChunkKey parseChunk(String k) {
         return parseChunk(ascii(k));
+    }
+
+    /** 目录节点键的解析结果。 */
+    public record DirNodeKey(long vid, int dir, long etype, int level, long other, long rank) {
+    }
+
+    /** d 目录节点键（带前缀，65 格）⇒ 字段；不是 ⇒ null。 */
+    public static DirNodeKey parseDirNode(byte[] k) {
+        int off = familyOffset(k);
+        if (off + 61 != k.length || k[off] != 'd') return null;
+        Long v = tryHex(k, off + 1, 16), d = tryHex(k, off + 17, 2), t = tryHex(k, off + 19, 8), l = tryHex(k, off + 27, 2),
+                o = tryHex(k, off + 29, 16), r = tryHex(k, off + 45, 16);
+        if (v == null || d == null || t == null || l == null || o == null || r == null || d < 0 || d > 1 || l <= 0) return null;
+        return new DirNodeKey(v, d.intValue(), t, l.intValue(), o, r);
+    }
+
+    public static DirNodeKey parseDirNode(String k) {
+        return parseDirNode(ascii(k));
     }
 
     /** p 键 ⇒ [src etype dst rank]；不是 ⇒ null。 */
