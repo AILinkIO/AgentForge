@@ -15,6 +15,8 @@ import io.ailink.agentforge.agent.models.Models;
 import io.ailink.agentforge.agent.models.ProvidersConfig;
 import io.ailink.agentforge.agent.models.Problem;
 import io.ailink.agentforge.agent.approval.ApprovalPreset;
+import io.ailink.agentforge.agent.project.Project;
+import io.ailink.agentforge.agent.project.ProjectStore;
 import io.ailink.agentforge.agent.approval.PermissionSettings;
 import io.ailink.agentforge.agent.approval.SessionPermissions;
 import io.ailink.agentforge.agent.prompt.Prompts;
@@ -111,6 +113,12 @@ public final class AgentRuntime implements AutoCloseable {
     private final SubagentHost subagentHost = new Host();
     private final McpEvent.Listener mcpListener;
     private final List<String> configProblems;
+    private final ProjectStore projects;
+
+    /** 会话开在哪个项目的哪个文件夹（只记开在项目里的主会话）。 */
+    private record Placement(String project, Path root) { }
+
+    private final Map<String, Placement> placements = new ConcurrentHashMap<>();
 
     private AgentRuntime(Builder b) {
         if (b.configDir != null) AgentPaths.override(b.configDir);
@@ -118,7 +126,10 @@ public final class AgentRuntime implements AutoCloseable {
         this.workspace = new Workspace(b.workspaceRoot != null ? b.workspaceRoot : Path.of(System.getProperty("user.dir")));
         this.models = b.models != null ? b.models : Models.instance();
         // 用户自己的 provider / 模型 / 默认模型（<configDir>/providers.json）；写错的那家跳过，原因留给宿主说
-        this.configProblems = b.models != null ? List.of() : ProvidersConfig.apply(models, configDir);
+        this.configProblems = new ArrayList<>(b.models != null ? List.of() : ProvidersConfig.apply(models, configDir));
+        this.projects = new ProjectStore(ProjectStore.file(configDir));
+        if (projects.broken() != null) configProblems.add(projects.broken());
+        projects.onChange(this::onProjectChanged);
         this.clients = b.clients != null ? b.clients : new ModelClients(models);
         this.backend = b.backend != null ? b.backend
                 : new ModelClientsBackend(models, clients, b.callerPolicy, b.connectTimeout);
@@ -356,19 +367,58 @@ public final class AgentRuntime implements AutoCloseable {
 
     /** 用 {@code agent} 开一段新对话（null = 注册表的默认）。 */
     public AgentSession newSession(String agent) {
+        return create(agent, null, null, null, null);
+    }
+
+    /**
+     * 开在某个项目里的会话：工作根是 {@code folder}（须是项目的源文件夹之一，否则用第一个），模型 / 权限预设先看项目的，
+     * 项目指令与其余源文件夹拼进系统提示，其余源文件夹在 workspace-write 下也可写。
+     */
+    public AgentSession newSession(String agent, Project project, String folder) {
+        Path root = project.folderOrDefault(folder);
+        return create(agent, root, projectPermissions(project, root, permissionDefault), project.model(), new Placement(project.id(), root));
+    }
+
+    /** 项目表（Web 端的「项目」；存在配置目录的 projects.json）。 */
+    public ProjectStore projects() { return projects; }
+
+    /** 会话开在哪个项目里（null = 不在项目里）。 */
+    public String projectOf(AgentSession s) {
+        Placement p = placements.get(s.id());
+        return p == null ? null : p.project();
+    }
+
+    /** 项目的权限：预设（有的话）定审批 × 沙盒，网络与另加可写目录跟全局；项目其余源文件夹也算可写。 */
+    static PermissionSettings projectPermissions(Project project, Path root, PermissionSettings global) {
+        PermissionSettings ps = global;
+        if (project.preset() != null) {
+            ApprovalPreset p = ApprovalPreset.parse(project.preset());
+            ps = ps.withApproval(p.approval()).withSandbox(p.sandbox());
+        }
+        List<String> roots = new ArrayList<>(ps.writableRoots());
+        for (String f : project.folders()) if (!Path.of(f).equals(root) && !roots.contains(f)) roots.add(f);
+        return ps.withWritableRoots(roots);
+    }
+
+    private AgentSession create(String agent, Path rootOrNull, PermissionSettings ps, String modelRef, Placement placement) {
         String who = agent != null ? agent : registry.defaultAgent();
         if (who == null) who = "main";
         Workspace sws = workspace.fork(Seen.class, Deletion.class);
+        if (rootOrNull != null) sws.setRoot(rootOrNull);
         Path root = sws.root();
         String model = null;
-        try { model = models.defaultModel(); } catch (RuntimeException ignored) { }
+        if (modelRef != null && models.meta(modelRef) != null) model = modelRef;
+        if (model == null) {
+            try { model = models.defaultModel(); } catch (RuntimeException ignored) { }
+        }
         AgentSession s = AgentSession.builder(backend, sws)
                 .model(model)
-                .system(systemPrompt(who, root))
                 .config(configTemplate.copy())
-                .permissions(sessionPermissions(root))
+                .permissions(sessionPermissions(root, ps != null ? ps : permissionDefault))
                 .agent(who)
                 .build();
+        if (placement != null) placements.put(s.id(), placement);
+        s.setSystem(promptFor(s, who, root));          // 项目那一节要 placement，所以建好再设
         try {
             String th = models.prefs().thinking();
             if (th != null) s.setThinking(th);
@@ -379,7 +429,7 @@ public final class AgentRuntime implements AutoCloseable {
         if (mcp != null) s.setToolsSettling(mcp::connecting);
         s.setOnRootChanged(p -> {
             s.permissions().setExecPolicy(execPolicy(p));
-            s.setSystem(systemPrompt(s.agent(), p));
+            s.setSystem(promptFor(s, s.agent(), p));
             s.setTools(toolsFor(s));
         });
         if (autosave) s.addListener(saver);
@@ -393,7 +443,11 @@ public final class AgentRuntime implements AutoCloseable {
                 .orElseThrow(() -> new IllegalArgumentException("没有这段对话：" + conv));
         List<Message> msgs = store.messages(conv);
         List<Compaction.Pointer> cs = store.compactions(conv);
-        AgentSession s = newSession();
+        Project p = c.project() == null ? null : projects.get(c.project()).orElse(null);
+        AgentSession s;
+        if (p != null) s = newSession(null, p, c.root());
+        else if (c.root() != null && java.nio.file.Files.isDirectory(Path.of(c.root()))) s = create(null, Path.of(c.root()), null, null, null);
+        else s = newSession();
         s.setHistory(msgs);
         s.setCompactions(cs);
         s.setTitle(c.title());
@@ -421,6 +475,7 @@ public final class AgentRuntime implements AutoCloseable {
         s.interrupt();
         s.removeListener(saver);
         sessions.remove(s.id());
+        placements.remove(s.id());
     }
 
     /** 这段会话在库里的对话 id；还没存过 null。 */
@@ -431,7 +486,7 @@ public final class AgentRuntime implements AutoCloseable {
         AgentDef d = registry.def(who);
         if (d == null) throw new IllegalArgumentException("没有叫 \"" + who + "\" 的 agent（有这些：" + registry.visibleDefs().stream().map(AgentDef::name).toList() + "）");
         s.setAgent(who);
-        s.setSystem(systemPrompt(who, s.workspace().root()));
+        s.setSystem(promptFor(s, who, s.workspace().root()));
         s.setActiveTools(agentToolNames(who));
     }
 
@@ -474,7 +529,36 @@ public final class AgentRuntime implements AutoCloseable {
         toolset.refreshMcp();
         for (AgentSession s : sessions.values()) {
             s.setTools(toolsFor(s));
-            s.setSystem(systemPrompt(s.agent(), s.workspace().root()));
+            s.setSystem(promptFor(s, s.agent(), s.workspace().root()));
+        }
+    }
+
+    /** 会话的系统提示：通用那份 + 它所在项目的那一节（没有项目就没有）。 */
+    private String promptFor(AgentSession s, String agent, Path root) {
+        String base = systemPrompt(agent, root);
+        Placement pl = placements.get(s.id());
+        Project p = pl == null ? null : projects.get(pl.project()).orElse(null);
+        return p == null ? base : base + projectSection(p, root);
+    }
+
+    /** 系统提示里的项目一节：项目名、源文件夹（标出工作根）、项目指令。 */
+    static String projectSection(Project p, Path root) {
+        StringBuilder sb = new StringBuilder("\n\n## 当前项目：").append(p.name()).append("\n");
+        if (p.folders().size() > 1) {
+            sb.append("\n这个项目有几个源文件夹，都是它的一部分（工作根是标了 ★ 的那个；别的文件夹用绝对路径访问）：\n");
+            for (String f : p.folders()) sb.append("- ").append(f).append(Path.of(f).equals(root) ? " ★" : "").append("\n");
+        }
+        if (p.instructions() != null) sb.append("\n### 项目指令（用户为这个项目写的，优先遵守）\n\n").append(p.instructions()).append("\n");
+        return sb.toString();
+    }
+
+    /** 项目改了：开在它里面的会话换上新的系统提示；有预设的话权限跟着换（模型只影响新会话）。 */
+    private void onProjectChanged(Project p) {
+        for (AgentSession s : sessions.values()) {
+            Placement pl = placements.get(s.id());
+            if (pl == null || !pl.project().equals(p.id())) continue;
+            s.setSystem(promptFor(s, s.agent(), s.workspace().root()));
+            s.permissions().setSettings(projectPermissions(p, pl.root(), permissionDefault));
         }
     }
 
@@ -506,6 +590,12 @@ public final class AgentRuntime implements AutoCloseable {
                 String title = s.title() != null ? s.title() : titleOf(h);
                 conv = store.newConversation(title, parent, s.id());
                 convs.put(s.id(), conv);
+                if (s.parent() == null) {
+                    Placement pl = placements.get(s.id());
+                    try {
+                        store.setPlacement(conv, pl == null ? null : pl.project(), (pl == null ? s.workspace().root() : pl.root()).toString());
+                    } catch (RuntimeException ignored) { }
+                }
                 if (parent == null && historyKeep > 0) store.truncate(historyKeep);
             }
             store.sync(conv, h);
@@ -557,7 +647,11 @@ public final class AgentRuntime implements AutoCloseable {
             models.prefs().setNetwork(ps.networkAccess());
             models.prefs().setWritableRoots(ps.writableRoots());
         } catch (RuntimeException ignored) { }
-        for (AgentSession s : sessions.values()) s.permissions().setSettings(ps);
+        for (AgentSession s : sessions.values()) {
+            Placement pl = placements.get(s.id());
+            Project p = pl == null ? null : projects.get(pl.project()).orElse(null);
+            s.permissions().setSettings(p == null ? ps : projectPermissions(p, pl.root(), ps));
+        }
     }
 
     /** 换成某个预设（保留可写根之外的一切都按预设来）。 */
@@ -599,8 +693,10 @@ public final class AgentRuntime implements AutoCloseable {
     }
 
     /** 一段主会话的权限状态（子 agent 共用它）。 */
-    private SessionPermissions sessionPermissions(Path root) {
-        SessionPermissions p = new SessionPermissions(permissionDefault, execPolicy(root), sandbox.active());
+    private SessionPermissions sessionPermissions(Path root) { return sessionPermissions(root, permissionDefault); }
+
+    private SessionPermissions sessionPermissions(Path root, PermissionSettings settings) {
+        SessionPermissions p = new SessionPermissions(settings, execPolicy(root), sandbox.active());
         try { p.loadAlwaysTools(models.prefs().approvedTools()); } catch (RuntimeException ignored) { }
         p.onAlwaysTool(name -> {
             try { models.prefs().addApprovedTool(name); } catch (RuntimeException ignored) { }

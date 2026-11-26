@@ -29,8 +29,16 @@ public interface SessionStore extends AutoCloseable {
 
     int SEARCH_MIN_CHARS = 3;
 
-    /** 一段对话。{@code sid} 是建它时那段会话的 id（子会话 = 那次 task 调用的 tool_use_id）。 */
-    record Conversation(long id, String title, long created, long updated, Long parent, String sid, int messages) { }
+    /**
+     * 一段对话。{@code sid} 是建它时那段会话的 id（子会话 = 那次 task 调用的 tool_use_id）；{@code project} / {@code root}
+     * 是它开在哪个项目的哪个文件夹里（都可空：没有项目的老对话 / 命令行开的对话）。
+     */
+    record Conversation(long id, String title, long created, long updated, Long parent, String sid, int messages,
+                        String project, String root) {
+        public Conversation(long id, String title, long created, long updated, Long parent, String sid, int messages) {
+            this(id, title, created, updated, parent, sid, messages, null, null);
+        }
+    }
 
     /** 一条命中：哪段对话的第几条、谁说的、命中附近的片段。 */
     record SearchHit(long conversation, int seq, String role, String snippet, String title) { }
@@ -40,6 +48,9 @@ public interface SessionStore extends AutoCloseable {
     default long newConversation(String title) { return newConversation(title, null, null); }
 
     void setTitle(long conv, String title);
+
+    /** 记下对话开在哪个项目 / 哪个工作根（任一可空）。 */
+    void setPlacement(long conv, String project, String root);
 
     /** 删掉对话（消息、指针、索引一起）；它的子会话一并删掉。 */
     void deleteConversation(long conv);

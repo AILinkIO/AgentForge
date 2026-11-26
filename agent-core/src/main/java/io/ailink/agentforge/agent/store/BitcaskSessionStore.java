@@ -166,7 +166,13 @@ public final class BitcaskSessionStore implements SessionStore {
     private static Conversation view(JsonNode c) {
         JsonNode sid = c.get("sid");
         return new Conversation(c.path("id").asLong(), c.path("title").asString(""), c.path("created").asLong(),
-                c.path("updated").asLong(), parentOf(c), sid == null || sid.isNull() ? null : sid.asString(), c.path("messages").asInt());
+                c.path("updated").asLong(), parentOf(c), sid == null || sid.isNull() ? null : sid.asString(), c.path("messages").asInt(),
+                textOrNull(c, "project"), textOrNull(c, "root"));
+    }
+
+    private static String textOrNull(JsonNode c, String k) {
+        JsonNode v = c.get(k);
+        return v == null || v.isNull() ? null : v.asString();
     }
 
     private static final Comparator<ObjectNode> RECENT_FIRST =
@@ -191,6 +197,14 @@ public final class BitcaskSessionStore implements SessionStore {
     public synchronized void setTitle(long conv, String title) {
         ObjectNode c = need(conv);
         c.put("title", title == null ? "" : title);
+        kv.put(convKey(conv), c.toString());
+    }
+
+    @Override
+    public synchronized void setPlacement(long conv, String project, String root) {
+        ObjectNode c = need(conv);
+        if (project == null) c.putNull("project"); else c.put("project", project);
+        if (root == null) c.putNull("root"); else c.put("root", root);
         kv.put(convKey(conv), c.toString());
     }
 

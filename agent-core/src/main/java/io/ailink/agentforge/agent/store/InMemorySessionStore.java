@@ -25,6 +25,8 @@ public final class InMemorySessionStore implements SessionStore {
         long updated;
         final Long parent;
         final String sid;
+        String project;
+        String root;
         final List<String> messages = new ArrayList<>();
         final List<String> texts = new ArrayList<>();      // 全文索引那份（每条消息的可搜文本）
         final List<String> roles = new ArrayList<>();
@@ -39,7 +41,7 @@ public final class InMemorySessionStore implements SessionStore {
             this.sid = sid;
         }
 
-        Conversation view() { return new Conversation(id, title, created, updated, parent, sid, messages.size()); }
+        Conversation view() { return new Conversation(id, title, created, updated, parent, sid, messages.size(), project, root); }
     }
 
     private final Map<Long, Conv> convs = new LinkedHashMap<>();
@@ -68,6 +70,13 @@ public final class InMemorySessionStore implements SessionStore {
 
     @Override
     public synchronized void setTitle(long conv, String title) { need(conv).title = title == null ? "" : title; }
+
+    @Override
+    public synchronized void setPlacement(long conv, String project, String root) {
+        Conv c = need(conv);
+        c.project = project;
+        c.root = root;
+    }
 
     @Override
     public synchronized void deleteConversation(long conv) {

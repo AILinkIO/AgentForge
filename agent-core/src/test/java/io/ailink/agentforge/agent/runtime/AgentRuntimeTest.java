@@ -95,6 +95,51 @@ class AgentRuntimeTest {
     }
 
     @Test
+    void projectSessionsUseTheProjectFolderSettingsAndAreRememberedPerConversation(@TempDir Path other) throws Exception {
+        Files.writeString(other.resolve("x.txt"), "在第二个文件夹里\n");
+        FakeCaller fc = new FakeCaller().thenText("好的");
+        try (AgentRuntime rt = RuntimeFixture.builder(cfg, root, fc).build()) {
+            var p = rt.projects().create("小说", List.of(root.toString(), other.toString()), "回答一律用文言文", null, "read-only");
+            AgentSession s = rt.newSession(null, p, other.toString());
+            assertEquals(other.toAbsolutePath().normalize(), s.workspace().root(), "工作根 = 选的那个源文件夹");
+            assertEquals(p.id(), rt.projectOf(s));
+            assertTrue(s.system().contains("## 当前项目：小说"), s.system());
+            assertTrue(s.system().contains("回答一律用文言文"));
+            assertTrue(s.system().contains(other.toAbsolutePath().normalize() + " ★"), "标出工作根");
+            assertEquals(io.ailink.agentforge.agent.sandbox.SandboxMode.READ_ONLY, s.permissions().settings().sandbox(), "项目预设");
+            assertTrue(s.permissions().settings().writableRoots().contains(root.toAbsolutePath().normalize().toString()), "其余源文件夹可写");
+
+            // 全局换预设：项目自带预设的会话不跟着变
+            rt.applyPreset(io.ailink.agentforge.agent.approval.ApprovalPreset.FULL_ACCESS);
+            assertEquals(io.ailink.agentforge.agent.sandbox.SandboxMode.READ_ONLY, s.permissions().settings().sandbox());
+
+            // 改项目指令：开着的会话系统提示跟着换
+            rt.projects().update(p.id(), p.name(), p.folders(), "回答一律用白话", null, "read-only");
+            assertTrue(s.system().contains("回答一律用白话"));
+            assertFalse(s.system().contains("文言文"));
+
+            s.send("你好");
+            assertTrue(s.awaitIdle(T));
+            long conv = rt.conversationOf(s);
+            SessionStore.Conversation c = rt.store().conversation(conv).orElseThrow();
+            assertEquals(p.id(), c.project());
+            assertEquals(other.toAbsolutePath().normalize().toString(), c.root());
+
+            // 重开：回到同一个项目、同一个文件夹
+            rt.closeSession(s);
+            AgentSession again = rt.openSession(conv);
+            assertEquals(p.id(), rt.projectOf(again));
+            assertEquals(other.toAbsolutePath().normalize(), again.workspace().root());
+            assertTrue(again.system().contains("回答一律用白话"));
+
+            // 不在项目里的会话照旧：记下工作根，没有项目
+            AgentSession plain = rt.newSession();
+            assertNull(rt.projectOf(plain));
+            assertFalse(plain.system().contains("当前项目"));
+        }
+    }
+
+    @Test
     void selectAgentSwapsPromptAndTools() {
         FakeCaller fc = new FakeCaller();
         try (AgentRuntime rt = RuntimeFixture.builder(cfg, root, fc).build()) {
