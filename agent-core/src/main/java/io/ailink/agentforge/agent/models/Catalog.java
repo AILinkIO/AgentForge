@@ -6,15 +6,10 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -55,7 +50,8 @@ public final class Catalog {
     private volatile JsonNode db;
     private volatile Long mtime;
     private volatile Source source = Source.NONE;
-    private volatile Fetcher fetcher = Catalog::httpGet;
+    private static final Fetcher DEFAULT_FETCHER = (url) -> Download.get(url, null);
+    private volatile Fetcher fetcher = DEFAULT_FETCHER;
 
     public Catalog() { this(null); }
 
@@ -152,42 +148,79 @@ public final class Catalog {
      * <p>⚠️ **先验再落盘**：一次 502 的 HTML 错误页不能把好好的缓存覆盖掉。
      * ⚠️ **先写临时文件再改名**：写到一半被杀，原来那份还在。
      */
-    public boolean refresh() {
-        Path p = path();
-        try {
-            byte[] body = fetcher.get(URL);
-            if (body == null) return false;
-            JsonNode obj = JSON.readTree(body);
-            if (obj == null || !obj.isObject() || obj.isEmpty()) return false;
-            Path dir = p.toAbsolutePath().getParent();
-            if (dir != null) Files.createDirectories(dir);
-            Path tmp = p.resolveSibling(p.getFileName() + ".tmp");
-            Files.write(tmp, body);
+    public boolean refresh() { return sync(null, null).ok(); }
+
+    /** 一次同步的结果：成了没有、没成为什么、收了多少字节、试了几次。 */
+    public record SyncResult(boolean ok, String error, long bytes, int attempts) { }
+
+    /**
+     * 同步（从 {@code url}，null = models.dev）：下载失败重试至多 {@link #ATTEMPTS} 次（4xx 不重试），说得出原因。
+     * 下到了但不是 api.json 的样子 ⇒ 不落盘，旧目录原样还在。
+     */
+    public SyncResult sync(String url, java.util.function.LongConsumer progress) {
+        String u = url == null || url.isBlank() ? URL : url.strip();
+        String why = null;
+        long bytes = 0;
+        int attempt = 0;
+        while (attempt < ATTEMPTS) {
+            attempt++;
             try {
-                Files.move(tmp, p, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(tmp, p, StandardCopyOption.REPLACE_EXISTING);
+                byte[] body = fetcher == DEFAULT_FETCHER ? Download.get(u, progress) : fetcher.get(u);
+                if (body == null) { why = "下载失败"; continue; }
+                bytes = body.length;
+                boolean ok;
+                try {
+                    ok = install(body);
+                } catch (IOException | RuntimeException e) {
+                    ok = false;                                       // 解析不了（比如代理回了一页 HTML）
+                }
+                if (ok) return new SyncResult(true, null, bytes, attempt);
+                return new SyncResult(false, "下到的不是 models.dev 的 api.json（不是非空 JSON 对象，可能是代理 / 网关回的错误页），旧目录没动", bytes, attempt);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return new SyncResult(false, "被打断了", bytes, attempt);
+            } catch (Exception e) {
+                why = e.getMessage() == null ? e.toString() : e.getMessage();
+                if (why.contains("HTTP 4")) break;                 // 4xx：再试也一样
             }
-            db = obj;
-            mtime = fileSeconds(p);
-            source = Source.CACHE;
-            return true;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
+            try { Thread.sleep(1000L * attempt * attempt); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+        }
+        return new SyncResult(false, why, bytes, attempt);
+    }
+
+    static final int ATTEMPTS = 3;
+
+    /**
+     * 装一份现成的 api.json（网页上的「导入」：服务器连不上 models.dev 时，在别处下好传上来）。
+     * 同样先验再落盘；不是非空 JSON 对象 ⇒ false，旧缓存不动。
+     */
+    public boolean importJson(byte[] body) {
+        try {
+            return install(body);
         } catch (Exception e) {
             return false;
         }
     }
 
-    private static byte[] httpGet(String url) throws IOException, InterruptedException {
-        HttpClient c = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
-                .followRedirects(HttpClient.Redirect.NORMAL).build();
-        HttpRequest req = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30))
-                .header("User-Agent", "agentforge").GET().build();
-        HttpResponse<byte[]> r = c.send(req, HttpResponse.BodyHandlers.ofByteArray());
-        return r.statusCode() == 200 ? r.body() : null;
+    private boolean install(byte[] body) throws IOException {
+        Path p = path();
+        JsonNode obj = JSON.readTree(body);
+        if (obj == null || !obj.isObject() || obj.isEmpty()) return false;
+        Path dir = p.toAbsolutePath().getParent();
+        if (dir != null) Files.createDirectories(dir);
+        Path tmp = p.resolveSibling(p.getFileName() + ".tmp");
+        Files.write(tmp, body);
+        try {
+            Files.move(tmp, p, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(tmp, p, StandardCopyOption.REPLACE_EXISTING);
+        }
+        db = obj;
+        mtime = fileSeconds(p);
+        source = Source.CACHE;
+        return true;
     }
+
 
     // ─── 读：只回答"models.dev 说了什么" ─────────────────────────────────
 
