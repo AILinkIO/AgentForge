@@ -1,9 +1,8 @@
 package io.ailink.agentforge.cli.agent;
 
 import io.ailink.agentforge.agent.mcp.McpManager;
-import io.ailink.agentforge.agent.models.EnvVars;
-import io.ailink.agentforge.agent.models.Models;
 import io.ailink.agentforge.agent.runtime.AgentRuntime;
+import io.ailink.agentforge.agent.runtime.ModelBootstrap;
 import io.ailink.agentforge.agent.approval.ApprovalPreset;
 import io.ailink.agentforge.agent.approval.PermissionSettings;
 import io.ailink.agentforge.agent.sandbox.SandboxMode;
@@ -134,32 +133,8 @@ public class AgentCommand implements Callable<Integer> {
         return new PermissionFlags(base, ap, sm, network, roots);
     }
 
-    /**
-     * 模型池：注册目录里的模型；一家 provider 都没启用、而环境里有某家的 key 时替用户启用它（首次运行的便利，会记进 state）。
-     * 回要在启动时说的话。
-     */
+    /** 模型池启动（见 {@link ModelBootstrap}）；回要在启动时说的话。 */
     static List<String> bootstrapModels(AgentRuntime rt) {
-        List<String> notes = new java.util.ArrayList<>();
-        rt.refreshModels();
-        Models m = rt.models();
-        if (m.providerIds().isEmpty()) {
-            List<String> adopted = new java.util.ArrayList<>();
-            for (String id : Models.knownProviders()) {
-                if (m.hasKey(id)) {
-                    try {
-                        m.selectProvider(id);
-                        adopted.add(id);
-                    } catch (RuntimeException e) {
-                        notes.add("启用 " + id + " 失败：" + e.getMessage());
-                    }
-                }
-            }
-            if (!adopted.isEmpty()) {
-                rt.refreshModels();
-                notes.add("按环境变量里的 key 启用了 provider：" + String.join("、", adopted));
-            }
-        }
-        if (EnvVars.get("AGENTFORGE_MODEL") != null) notes.add("模型取自 $AGENTFORGE_MODEL");
-        return notes;
+        return new java.util.ArrayList<>(ModelBootstrap.run(rt));
     }
 }
