@@ -1,0 +1,162 @@
+/* 主题变量：shadcn/ui 的 neutral 底色（oklch），外加 shadcnuikit 式的配色预设（html[data-preset]）、
+   圆角（--radius）与缩放（html[data-scale]）。success / warning / *-soft 是 agent 界面要的状态色。 */
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --primary-soft: oklch(0.205 0 0 / 7%);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --subtle-foreground: oklch(0.4 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-soft: oklch(0.577 0.245 27.325 / 9%);
+  --success: oklch(0.6 0.15 150);
+  --success-soft: oklch(0.6 0.15 150 / 10%);
+  --warning: oklch(0.66 0.16 65);
+  --warning-soft: oklch(0.75 0.16 75 / 14%);
+  --info: oklch(0.6 0.17 250);
+  --info-soft: oklch(0.6 0.17 250 / 10%);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --primary-soft: oklch(0.922 0 0 / 9%);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --subtle-foreground: oklch(0.82 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-soft: oklch(0.704 0.191 22.216 / 14%);
+  --success: oklch(0.76 0.15 150);
+  --success-soft: oklch(0.76 0.15 150 / 13%);
+  --warning: oklch(0.82 0.15 80);
+  --warning-soft: oklch(0.82 0.15 80 / 13%);
+  --info: oklch(0.74 0.13 250);
+  --info-soft: oklch(0.74 0.13 250 / 14%);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.922 0 0);
+  --sidebar-primary-foreground: oklch(0.205 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+/* ── 配色预设：只换重点色（primary / ring / sidebar-primary / chart-1），底色保持 neutral ── */
+html[data-preset='blue'] { --primary: oklch(0.546 0.245 262.881); --primary-foreground: oklch(0.985 0 0); --ring: oklch(0.707 0.165 254.624); }
+html[data-preset='blue'].dark { --primary: oklch(0.623 0.214 259.815); --primary-foreground: oklch(0.985 0 0); --ring: oklch(0.488 0.243 264.376); }
+html[data-preset='green'] { --primary: oklch(0.596 0.145 163.225); --primary-foreground: oklch(0.985 0 0); --ring: oklch(0.765 0.177 163.223); }
+html[data-preset='green'].dark { --primary: oklch(0.696 0.17 162.48); --primary-foreground: oklch(0.205 0 0); --ring: oklch(0.508 0.118 165.612); }
+html[data-preset='orange'] { --primary: oklch(0.646 0.222 41.116); --primary-foreground: oklch(0.985 0 0); --ring: oklch(0.75 0.183 55.934); }
+html[data-preset='orange'].dark { --primary: oklch(0.705 0.213 47.604); --primary-foreground: oklch(0.205 0 0); --ring: oklch(0.553 0.195 38.402); }
+html[data-preset='rose'] { --primary: oklch(0.586 0.253 17.585); --primary-foreground: oklch(0.985 0 0); --ring: oklch(0.712 0.194 13.428); }
+html[data-preset='rose'].dark { --primary: oklch(0.645 0.246 16.439); --primary-foreground: oklch(0.985 0 0); --ring: oklch(0.455 0.188 13.697); }
+html[data-preset='violet'] { --primary: oklch(0.541 0.281 293.009); --primary-foreground: oklch(0.985 0 0); --ring: oklch(0.702 0.183 293.541); }
+html[data-preset='violet'].dark { --primary: oklch(0.606 0.25 292.717); --primary-foreground: oklch(0.985 0 0); --ring: oklch(0.432 0.232 292.759); }
+html[data-preset]:not([data-preset='neutral']) {
+  --primary-soft: color-mix(in oklch, var(--primary) 10%, transparent);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-ring: var(--ring);
+  --chart-1: var(--primary);
+}
+
+/* ── 缩放：Tailwind 全用 rem，改根字号即整体缩放 ── */
+html[data-scale='sm'] { font-size: 15px; }
+html[data-scale='lg'] { font-size: 17px; }
+
+@theme inline {
+  --font-sans: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI',
+    'Noto Sans CJK SC', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, 'Cascadia Mono', monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}

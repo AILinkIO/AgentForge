@@ -1,0 +1,200 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import './theme.css';
+
+@custom-variant dark (&:is(.dark *));
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  html {
+    @apply overflow-x-hidden;
+  }
+  body {
+    @apply min-h-svh w-full bg-background font-sans text-sm text-foreground antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+
+  /* Override Radix scroll locking for sticky headers */
+  body[data-scroll-locked] {
+    overflow: unset !important;
+  }
+  /* 页面的滚动容器是 html（overflow-x: hidden 使其成为纵向滚动容器），Radix 只锁 body；
+     弹层（抽屉、对话框）打开时在 html 上锁住滚动，避免滚到底下的页面，也不影响 sticky 表头 */
+  html:has(body[data-scroll-locked]) {
+    overflow: hidden;
+  }
+
+  /* Cursor pointer for buttons */
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+
+  /* Prevent focus zoom on mobile devices */
+  @media screen and (max-width: 767px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px !important;
+    }
+  }
+}
+
+@utility container {
+  margin-inline: auto;
+  padding-inline: 2rem;
+}
+
+/* 数字对齐 */
+@utility num {
+  font-variant-numeric: tabular-nums;
+}
+
+@utility no-scrollbar {
+  /* Hide scrollbar for Chrome, Safari and Opera */
+  &::-webkit-scrollbar {
+    display: none;
+  }
+  /* Hide scrollbar for IE, Edge and Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+
+@utility faded-bottom {
+  @apply after:pointer-events-none after:absolute after:inset-s-0 after:bottom-0 after:hidden after:h-32 after:w-full after:rounded-b-2xl after:bg-[linear-gradient(180deg,transparent_10%,var(--background)_70%)] md:after:block;
+}
+
+/* styles.css */
+.CollapsibleContent {
+  overflow: hidden;
+}
+.CollapsibleContent[data-state='open'] {
+  animation: slideDown 300ms ease-out;
+}
+.CollapsibleContent[data-state='closed'] {
+  animation: slideUp 300ms ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+  }
+}
+
+@keyframes slideUp {
+  from {
+    height: var(--radix-collapsible-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
+
+/* 生成中的文字流光 */
+.shimmer-text {
+  background: linear-gradient(90deg, var(--muted-foreground) 0%, var(--muted-foreground) 40%, var(--foreground) 50%,
+      var(--muted-foreground) 60%, var(--muted-foreground) 100%);
+  background-size: 300% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: shimmer 3.5s linear infinite;
+}
+@keyframes shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text { animation: none; color: var(--muted-foreground); }
+}
+
+/* 流式输出末尾的光标 */
+@utility stream-caret {
+  &::after {
+  content: '';
+  display: inline-block;
+  width: 0.5em;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--foreground);
+  opacity: 0.55;
+  animation: caret 1s steps(2) infinite;
+  }
+}
+@keyframes caret { 50% { opacity: 0; } }
+
+/* 助手回复的 Markdown */
+.chat-md {
+  --md-code-bg: color-mix(in oklch, var(--foreground) 4%, transparent);
+  --md-code-border: color-mix(in oklch, var(--foreground) 10%, transparent);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.dark .chat-md {
+  --md-code-bg: color-mix(in oklch, var(--foreground) 6%, transparent);
+  --md-code-border: color-mix(in oklch, var(--foreground) 14%, transparent);
+}
+.chat-md > :first-child { margin-top: 0; }
+.chat-md > :last-child { margin-bottom: 0; }
+.chat-md p, .chat-md ul, .chat-md ol, .chat-md blockquote, .chat-md table, .chat-md .code-block { margin: 0.6em 0; }
+.chat-md h1, .chat-md h2, .chat-md h3, .chat-md h4 { margin: 1em 0 0.45em; font-weight: 600; line-height: 1.35; }
+.chat-md h1 { font-size: 1.125rem; }
+.chat-md h2 { font-size: 1.0625rem; }
+.chat-md h3 { font-size: 1rem; }
+.chat-md h4 { font-size: 0.9375rem; }
+.chat-md ul { list-style: disc; padding-left: 1.4em; }
+.chat-md ol { list-style: decimal; padding-left: 1.4em; }
+.chat-md li { margin: 0.2em 0; }
+.chat-md li > input[type='checkbox'] { margin-right: 0.4em; vertical-align: middle; }
+.chat-md a { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; }
+.chat-md strong { font-weight: 600; }
+.chat-md blockquote { border-left: 3px solid var(--border); padding-left: 0.8em; color: var(--muted-foreground); }
+.chat-md hr { margin: 1.2em 0; border-color: var(--border); }
+.chat-md :not(pre) > code {
+  font-size: 0.85em;
+  padding: 0.12em 0.36em;
+  border-radius: 5px;
+  background: var(--md-code-bg);
+  border: 1px solid var(--md-code-border);
+  font-family: var(--font-mono);
+}
+.chat-md .code-block { position: relative; border: 1px solid var(--md-code-border); border-radius: calc(var(--radius) - 2px); background: var(--md-code-bg); }
+.chat-md .code-block pre { overflow-x: auto; padding: 0.85em 1em; font-size: 0.8rem; line-height: 1.6; font-family: var(--font-mono); }
+.chat-md table { display: block; overflow-x: auto; border-collapse: collapse; font-size: 0.875em; overflow-wrap: normal; word-break: normal; }
+.chat-md td, .chat-md th { min-width: 4.5rem; vertical-align: top; }
+.chat-md td code, .chat-md th code { white-space: nowrap; }
+.chat-md th, .chat-md td { border: 1px solid var(--md-code-border); padding: 0.4em 0.75em; text-align: left; }
+.chat-md th { background: var(--md-code-bg); font-weight: 600; }
+
+/* 代码高亮（highlight.js 类名；配色跟着明暗走） */
+.hljs-comment, .hljs-quote { color: oklch(0.55 0.02 260); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-type { color: oklch(0.5 0.2 300); }
+.hljs-string, .hljs-attr-value, .hljs-regexp, .hljs-addition { color: oklch(0.52 0.14 150); }
+.hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet { color: oklch(0.58 0.16 50); }
+.hljs-title, .hljs-section, .hljs-function .hljs-title { color: oklch(0.5 0.17 255); }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable, .hljs-property { color: oklch(0.55 0.15 20); }
+.hljs-meta, .hljs-deletion { color: oklch(0.55 0.18 25); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+.dark .hljs-comment, .dark .hljs-quote { color: oklch(0.62 0.02 260); }
+.dark .hljs-keyword, .dark .hljs-selector-tag, .dark .hljs-built_in, .dark .hljs-type { color: oklch(0.75 0.15 300); }
+.dark .hljs-string, .dark .hljs-attr-value, .dark .hljs-regexp, .dark .hljs-addition { color: oklch(0.78 0.13 150); }
+.dark .hljs-number, .dark .hljs-literal, .dark .hljs-symbol, .dark .hljs-bullet { color: oklch(0.8 0.13 60); }
+.dark .hljs-title, .dark .hljs-section, .dark .hljs-function .hljs-title { color: oklch(0.78 0.12 250); }
+.dark .hljs-attr, .dark .hljs-attribute, .dark .hljs-variable, .dark .hljs-template-variable, .dark .hljs-property { color: oklch(0.78 0.12 20); }
+.dark .hljs-meta, .dark .hljs-deletion { color: oklch(0.75 0.15 25); }
+
+/* diff 预览 */
+.diff-view { font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.55; }
+.diff-view .add { background: var(--success-soft); color: var(--success); }
+.diff-view .del { background: var(--destructive-soft); color: var(--destructive); }
+.diff-view .hunk { color: var(--info); }
+.diff-view .meta { color: var(--muted-foreground); }
