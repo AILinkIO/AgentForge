@@ -1,5 +1,4 @@
 rootProject.name = "agentforge"
 
-// 第一阶段：核心（bitcask / sandbox / agent-core）+ 现有 CLI 接上。
-// 后续阶段：app-cli 重写（参照 coxswain main）→ app-gui（Compose）→ app-web（Spring Boot + React）。
-include("bitcask", "sandbox", "agent-core", "app-cli", "tui", "tui-agent")
+// 核心（bitcask / sandbox / agent-core）→ CLI（tui / tui-agent / app-cli）→ Web（app-web：Spring Boot + Jetty 后端，React 前端）。
+include("bitcask", "sandbox", "agent-core", "app-cli", "tui", "tui-agent", "app-web")

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# AgentForge 网页端：./agentforge-web [--server.port=8787] [--agentforge.web.root=/path（顺手登记成项目）] …
+# 缺省只听 127.0.0.1:8787；对外开放加 --server.address=0.0.0.0（会要求访问令牌，见日志）。
+DIR="$(cd "$(dirname "$0")" && pwd)"
+SRC="$DIR/app-web/build/libs/agentforge-web.jar"
+[ -f "$SRC" ] || { echo "找不到 $SRC，先构建：./gradlew :app-web:bootJar -Pbitcask.lib=/path/libbitcask.so" >&2; exit 1; }
+# 从缓存副本跑：运行中重新构建不会把正在用的 jar 换掉（同 ./agentforge）
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/agentforge/jars"
+mkdir -p "$CACHE"
+STAMP="$(stat -c '%s-%Y' "$SRC" 2>/dev/null || stat -f '%z-%m' "$SRC")"
+JAR="$CACHE/agentforge-web-$STAMP.jar"
+if [ ! -f "$JAR" ]; then
+  cp "$SRC" "$JAR.tmp.$$" && mv -f "$JAR.tmp.$$" "$JAR"
+  ls -1t "$CACHE"/agentforge-web-*.jar 2>/dev/null | tail -n +4 | xargs -r rm -f
+fi
+OPTS=(--enable-native-access=ALL-UNNAMED)
+[ -f "$DIR/sandbox/build/native/libagentforge_sandbox_native.so" ] && OPTS+=("-Dagentforge.sandbox.native.dir=$DIR/sandbox/build/native")
+# 项目在网页上加（像 Codex / ChatGPT 的项目）；--agentforge.web.root=DIR 可在启动时顺手登记一个
+exec java "${OPTS[@]}" -jar "$JAR" "$@"

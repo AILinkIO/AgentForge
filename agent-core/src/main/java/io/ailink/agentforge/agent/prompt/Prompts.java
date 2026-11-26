@@ -40,6 +40,12 @@ public final class Prompts {
                 "你活在 AgentForge 的命令行 agent 会话里。你说的话按 markdown 渲染在"
                         + "终端里 —— 长表格与深层嵌套排不下，宁可用短段落和列表。\n",
                 false);
+        /** AgentForge 网页端。 */
+        public static final Host WEB = new Host(
+                "你是 AgentForge 里的编程助手。",
+                "你活在 AgentForge 网页端的 agent 会话里。你说的话按 GitHub 风格 markdown 渲染在"
+                        + "浏览器里（表格、代码高亮都支持），但仍以简短为上。\n",
+                false);
     }
 
     // ─── 主 agent ────────────────────────────────────────────────────────
