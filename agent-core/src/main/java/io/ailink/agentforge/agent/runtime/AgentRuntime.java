@@ -687,6 +687,18 @@ public final class AgentRuntime implements AutoCloseable {
         for (AgentSession s : sessions.values()) s.setModel(ref);
     }
 
+    /**
+     * 改默认模型但**不动开着的会话**（网页端：好几段会话各用各的）。默认模型的优先级是 环境变量 → providers.json 的
+     * {@code model} → 上次点的：配置里写了默认的话，只改 prefs 等于没改，所以连那一项一起改写。
+     */
+    public synchronized void setDefaultModel(String ref) {
+        models.selectModel(ref);
+        if (models.configDefault() != null) {
+            ProvidersConfig.setDefaultModel(configDir, ref);
+            models.setConfigDefault(ref);
+        }
+    }
+
     /** providers.json 里没用上的那几条（每条一句）；宿主启动时该说出来。 */
     public List<String> configProblems() { return configProblems; }
 
@@ -710,6 +722,37 @@ public final class AgentRuntime implements AutoCloseable {
     public void removeKey(String providerId) {
         models.removeKey(providerId);
         refreshModels();
+    }
+
+    /**
+     * 重读 {@code providers.json}（网页上加 / 改 / 删了一家之后）：先撤掉配置定义的那几家与它们手写的模型，再整份应用一遍。
+     * 回这次读出来的问题（每条一句）。界面里选中的（models.dev 那几家）不受影响。
+     */
+    public synchronized List<String> reloadProvidersConfig() {
+        for (String id : models.providerIds()) {
+            var p = models.provider(id);
+            if (p == null || p.origin() != io.ailink.agentforge.agent.models.ProviderInfo.Origin.DEFINED) continue;
+            for (ModelMeta m : models.modelMetas())
+                if (!m.builtin() && m.ref().providerId().equals(id)) models.unregisterModel(m.ref().toString());
+            models.undefineProvider(id);
+        }
+        List<String> problems = ProvidersConfig.apply(models, configDir);
+        refreshModels();
+        return problems;
+    }
+
+    /** 装一份手里的 models.dev api.json（服务器连不上外网时）；回装上了没有。 */
+    public boolean importCatalog(byte[] body) {
+        boolean ok = models.catalog().importJson(body);
+        refreshModels();
+        return ok;
+    }
+
+    /** 同步模型目录（联网；{@code url} null = models.dev），带进度与失败原因。同步完重注册模型。 */
+    public io.ailink.agentforge.agent.models.Catalog.SyncResult syncCatalog(String url, java.util.function.LongConsumer progress) {
+        var r = models.catalog().sync(url, progress);
+        refreshModels();
+        return r;
     }
 
     /** 刷新 models.dev 目录（联网）；回刷到了没有。 */
