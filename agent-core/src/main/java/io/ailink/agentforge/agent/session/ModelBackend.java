@@ -7,7 +7,7 @@ import io.ailink.agentforge.agent.models.ModelRef;
 /**
  * 会话"问模型"要的那一点：这条模型的元数据 + 这次请求用哪个 {@link ModelCaller}。
  *
- * <p>真实实现在 runtime（{@code ModelClientsBackend}：Spring AI 为主，Anthropic 开思考时换原生 caller）；测试给一个假
+ * <p>真实实现在 runtime（{@code ModelClientsBackend}：Anthropic 线格式走原生 caller，OpenAI 线格式走 Spring AI）；测试给一个假
  * caller 就行（{@link #of}）。⚠️ caller 按**每次请求**取：换模型 / 换思考档位都可能换 caller。
  */
 public interface ModelBackend {

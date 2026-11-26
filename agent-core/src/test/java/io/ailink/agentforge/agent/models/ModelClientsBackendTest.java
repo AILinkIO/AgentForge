@@ -51,12 +51,12 @@ class ModelClientsBackendTest {
     }
 
     @Test
-    void nativeAnthropicOnlyWhenThinkingIsOn() {
+    void anthropicAlwaysGoesNative() {
         ModelClientsBackend b = new ModelClientsBackend(models, clients, CallerPolicy.DEFAULT, null);
-        assertInstanceOf(SpringAiModelCaller.class, b.caller("deepseek/deepseek-v4-pro", "high"));
-        assertInstanceOf(SpringAiModelCaller.class, b.caller("minimax/MiniMax-M3", null));
-        assertInstanceOf(SpringAiModelCaller.class, b.caller("minimax/MiniMax-M3", "off"));
-        assertFalse(b.caller("minimax/MiniMax-M3", "on") instanceof SpringAiModelCaller, "开思考的 Anthropic 走原生 caller");
+        assertInstanceOf(SpringAiModelCaller.class, b.caller("deepseek/deepseek-v4-pro", "high"), "OpenAI 线格式走 Spring AI");
+        assertFalse(b.caller("minimax/MiniMax-M3", null) instanceof SpringAiModelCaller, "Anthropic 不开思考也走原生");
+        assertFalse(b.caller("minimax/MiniMax-M3", "off") instanceof SpringAiModelCaller);
+        assertFalse(b.caller("minimax/MiniMax-M3", "on") instanceof SpringAiModelCaller);
         assertTrue(b.anthropic("minimax/MiniMax-M3"));
         assertFalse(b.anthropic("deepseek/deepseek-v4-pro"));
         assertNotNull(b.meta("minimax/MiniMax-M3"));
@@ -65,5 +65,9 @@ class ModelClientsBackendTest {
 
         ModelClientsBackend spring = new ModelClientsBackend(models, clients, CallerPolicy.SPRING_AI_ONLY, null);
         assertInstanceOf(SpringAiModelCaller.class, spring.caller("minimax/MiniMax-M3", "on"));
+
+        ModelClientsBackend old = new ModelClientsBackend(models, clients, CallerPolicy.NATIVE_WHEN_THINKING, null);
+        assertInstanceOf(SpringAiModelCaller.class, old.caller("minimax/MiniMax-M3", "off"));
+        assertFalse(old.caller("minimax/MiniMax-M3", "on") instanceof SpringAiModelCaller);
     }
 }
