@@ -1409,6 +1409,13 @@ public final class AgentSession {
         if (current(t) && shouldCompact()) compact();
     }
 
+    /** 现在压得出东西吗（切得出值得压的头）：宿主在异步压之前先问一句，好当场告诉用户"还短，不用压"。 */
+    public boolean canCompact() {
+        synchronized (lock) {
+            return Compaction.split(Compaction.apply(history, compactions), Compaction.preserveBudget(inputBudget())) != null;
+        }
+    }
+
     /**
      * 压一次：前半段压成一份交接材料，追加"通告 + 摘要"两条并记一条指针；尾巴（最近几轮）原样留着。
      * 先试**接在原对话末尾**那一问（同样的 system + 工具 + 历史 ⇒ 整段前缀命中 prompt cache），不成再摊平重问。

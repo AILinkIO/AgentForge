@@ -97,9 +97,14 @@ public final class Transcript {
             if (m.isUser() && !ContextMath.human(m)) {
                 for (Block.ToolResult r : m.toolResults()) out.add(toolResult(r.content(), r.error(), r.toolUseId()));
             } else if (ContextMath.human(m)) {
-                out.add(Entry.user(Reminder.shownText(m)));
+                // 压缩留下的那两条带上 compaction 标记（notice / summary），界面画成分隔线与"前情提要"
+                out.add(m.meta("compaction") instanceof String c
+                        ? new Entry(Entry.Role.USER, Reminder.shownText(m), Map.of("compaction", c))
+                        : Entry.user(Reminder.shownText(m)));
             } else if (m.isAssistant()) {
-                if (!m.text().isEmpty()) out.add(Entry.assistant(m.text()));
+                if (!m.text().isEmpty()) out.add(m.meta("compaction") instanceof String c
+                        ? new Entry(Entry.Role.ASSISTANT, m.text(), Map.of("compaction", c))
+                        : Entry.assistant(m.text()));
                 for (Block.ToolUse u : m.toolUses()) out.add(toolCall(u.name(), u.id(), u.input(), results.get(u.id())));
             }
         }
